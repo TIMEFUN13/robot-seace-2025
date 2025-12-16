@@ -26,80 +26,97 @@ def enviar_telegram(ruta_pdf, nombre_archivo):
         return "Error al subir"
 
 def main():
-    print("Iniciando Robot 2.0...")
+    print("Iniciando Robot 3.0 (Modo Diagnóstico)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # Agregamos un User-Agent para parecer un navegador real y evitar bloqueos
+    # User Agent para simular ser humano real
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36")
     
     driver = webdriver.Chrome(options=chrome_options)
+    # Hacemos la ventana grande para asegurar que se vean los botones
+    driver.set_window_size(1920, 1080)
     
     try:
-        # 1. ENTRAR AL SEACE
         url_seace = "https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml"
         print(f"Entrando a: {url_seace}")
         driver.get(url_seace)
+        time.sleep(5) # Espera simple para carga inicial
         
-        # DIAGNÓSTICO: Imprimir el título de la página para saber si nos bloquearon
-        print(f"TÍTULO DE LA PÁGINA: {driver.title}")
+        print(f"TÍTULO: {driver.title}")
         
-        # 2. ESPERA INTELIGENTE (Hasta 20 segundos para que aparezca el botón)
-        wait = WebDriverWait(driver, 20)
+        # --- DIAGNÓSTICO DE BOTONES ---
+        print("--- Buscando botones visibles ---")
+        botones = driver.find_elements(By.TAG_NAME, "button")
+        inputs = driver.find_elements(By.TAG_NAME, "input")
+        links = driver.find_elements(By.TAG_NAME, "a")
         
-        # Intentamos buscar el botón por ID, si falla, probamos otro método
-        try:
-            print("Buscando botón 'Buscar'...")
-            btn_buscar = wait.until(EC.element_to_be_clickable((By.ID, "frmBuscador:btnBuscar")))
-            btn_buscar.click()
-            print("¡Clic en Buscar exitoso!")
-        except:
-            print("No encontré el botón por ID. Intentando por texto...")
-            # Plan B: Buscar cualquier botón que diga "Buscar"
-            btn_buscar = driver.find_element(By.XPATH, "//button[contains(text(),'Buscar')]")
-            btn_buscar.click()
+        candidato_buscar = None
         
-        # Esperamos resultados
-        time.sleep(10)
+        # Buscamos en INPUTS (SEACE suele usar inputs para botones)
+        for i in inputs:
+            val = i.get_attribute("value") or ""
+            id_txt = i.get_attribute("id") or ""
+            # Si encontramos algo que diga "Buscar" o tenga ID 'btnBuscar'
+            if "Buscar" in val or "btnBuscar" in id_txt:
+                print(f"¡CANDIDATO ENCONTRADO! Tag: Input | ID: {id_txt} | Value: {val}")
+                candidato_buscar = i
+                break
         
+        # Si no, buscamos en BUTTONS
+        if not candidato_buscar:
+            for b in botones:
+                txt = b.text
+                id_txt = b.get_attribute("id") or ""
+                if "Buscar" in txt or "btnBuscar" in id_txt:
+                    print(f"¡CANDIDATO ENCONTRADO! Tag: Button | ID: {id_txt} | Text: {txt}")
+                    candidato_buscar = b
+                    break
+
+        if candidato_buscar:
+            print("Intentando hacer clic en el candidato...")
+            # Usamos Javascript para forzar el clic (más efectivo en SEACE)
+            driver.execute_script("arguments[0].click();", candidato_buscar)
+            print("Clic enviado. Esperando resultados...")
+            time.sleep(10)
+        else:
+            print("❌ NO ENCONTRÉ EL BOTÓN. Imprimiendo estructura de la página...")
+            print(driver.page_source[:2000]) # Imprime el código HTML para ver qué pasa
+            return
+
         # 3. EXTRAER RESULTADOS
-        # Buscamos la tabla de resultados
         filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]") 
         
         if not filas:
-            print("La tabla de resultados está vacía o no cargó.")
-            # Si falla, tomamos una 'foto' del código fuente para ver qué pasó
-            print("Contenido parcial de la web:", driver.page_source[:500])
+            print("La tabla de resultados sigue vacía. Puede que necesitemos filtrar por año.")
             return
 
-        print(f"¡Encontré {len(filas)} procesos!")
+        print(f"¡ÉXITO! Encontré {len(filas)} procesos.")
         
         # PROCESAMOS EL PRIMERO
         fila = filas[0]
         texto_fila = fila.text
-        print(f"Proceso detectado: {texto_fila[:50]}...")
+        print(f"Proceso: {texto_fila[:50]}...")
         
-        # Crear PDF falso de prueba (ya que Selenium Headless a veces complica descargas reales sin config extra)
+        # Simulamos PDF y envio
         with open("bases_prueba.pdf", "w") as f:
-            f.write("PDF de prueba generado por el Robot SEACE.")
-            
-        link_telegram = enviar_telegram("bases_prueba.pdf", "Reporte_SEACE.pdf")
+            f.write("PDF generado por Robot 3.0")
         
-        # 4. MANDAR A GOOGLE SHEETS
+        link = enviar_telegram("bases_prueba.pdf", "Resultado_Exitoso.pdf")
+        
         payload = {
             "desc": texto_fila[:150], 
-            "entidad": "SEACE AUTOMÁTICO",
-            "pdf": link_telegram,
-            "analisis": f"Título página: {driver.title}"
+            "entidad": "Robot 3.0",
+            "pdf": link,
+            "analisis": "Conexión exitosa al SEACE"
         }
-        
-        response = requests.post(WEBHOOK_URL, json=payload)
-        print(f"Respuesta del Excel: {response.text}")
+        requests.post(WEBHOOK_URL, json=payload)
+        print("Datos enviados a Google Sheets.")
 
     except Exception as e:
-        print(f"❌ ERROR CRÍTICO: {e}")
+        print(f"❌ ERROR: {e}")
     finally:
         driver.quit()
 
