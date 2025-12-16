@@ -68,13 +68,10 @@ def extraer_texto_word(ruta_archivo):
     return texto
 
 def obtener_modelo_dinamico():
-    """
-    Pregunta a Google qué modelos tiene disponibles la cuenta y elige el mejor.
-    """
     global MODELO_ACTUAL
-    if MODELO_ACTUAL: return MODELO_ACTUAL # Si ya lo encontramos, lo reusamos
+    if MODELO_ACTUAL: return MODELO_ACTUAL
 
-    print("      🔍 Buscando nombre de modelo compatible...")
+    print("      🔍 Buscando modelo IA disponible...")
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
     
     try:
@@ -82,70 +79,69 @@ def obtener_modelo_dinamico():
         if response.status_code == 200:
             data = response.json()
             modelos = data.get('models', [])
-            
-            # 1. Buscamos uno que sea 'generateContent' y preferiblemente Flash
             candidato = None
             for m in modelos:
-                nombre = m['name'] # Ej: models/gemini-1.5-flash-001
+                nombre = m['name']
                 metodos = m.get('supportedGenerationMethods', [])
-                
                 if 'generateContent' in metodos:
                     if 'flash' in nombre.lower():
                         MODELO_ACTUAL = nombre
-                        print(f"      ✅ Modelo FLASH detectado: {MODELO_ACTUAL}")
                         return MODELO_ACTUAL
                     elif 'pro' in nombre.lower() and not candidato:
                         candidato = nombre
-            
-            # Si no hay flash, usamos el candidato (Pro)
             if candidato:
                 MODELO_ACTUAL = candidato
-                print(f"      ✅ Modelo PRO detectado: {MODELO_ACTUAL}")
                 return MODELO_ACTUAL
-            
-            # Si no hay nada claro, fallback
             MODELO_ACTUAL = "models/gemini-1.5-flash" 
             return MODELO_ACTUAL
         else:
-            print(f"      ⚠️ Error listando modelos: {response.status_code}")
             return "models/gemini-1.5-flash"
-    except Exception as e:
-        print(f"      ⚠️ Error conexión inicial: {e}")
+    except:
         return "models/gemini-1.5-flash"
 
 def analizar_con_ia_directo(texto_o_imagenes, es_imagen=False):
-    # 1. Obtenemos el nombre correcto
     nombre_modelo = obtener_modelo_dinamico()
-    
-    # 2. Preparamos la URL con ese nombre
-    # El nombre ya viene como 'models/gemini...', no hace falta agregarlo
     if not nombre_modelo.startswith("models/"): nombre_modelo = f"models/{nombre_modelo}"
     
-    print(f"      📡 Enviando a {nombre_modelo}...")
+    print(f"      📡 Enviando TODO el contenido a {nombre_modelo}...")
     url = f"https://generativelanguage.googleapis.com/v1beta/{nombre_modelo}:generateContent?key={GEMINI_API_KEY}"
     headers = {'Content-Type': 'application/json'}
     
+    # --- TU PROMPT DE EXPERTO (TEXTUAL) ---
     prompt = """
-    Rol: Experto en Licitaciones.
-    Extrae: CARGO, PROFESIÓN, EXPERIENCIA del personal clave.
-    Formato:
-    👷 **[CARGO]**: [Profesión]
-    🕒 [Experiencia]
-    🎓 [Otros]
-    Si no hay, resume el OBJETO.
+    ERES UN EXPERTO EN ASESORIA PARA LICITACIONES O CONCURSOS O MANEJO DEL SEACE DEL PERU. 
+    QUIERO QUE LEAS EL DOCUMENTO O DOCUMENTOS PARA DETERMINAR LOS REQUISITOS QUE SE ESTÁ PIDIENDO PARA PODER GANAR ESA PUESTA, O QUE SE NECESITA EN SI, QUE PERSONAL, QUE EXPERIENCIA ETC. 
+    TU ERES EL EXPERTO EN ESTAS ASESORIAS Y DEBES SABER LO NECESARIO PARA DECIRME Y PODER AVANZAR EN EL PROCESO.
+
+    Por favor, estructura tu respuesta de forma estratégica para un ingeniero/empresa:
+    
+    🎯 **ESTRATEGIA PARA GANAR:**
+    [Resumen ejecutivo de qué se trata y la clave del éxito]
+
+    📋 **REQUISITOS OBLIGATORIOS (ADMISIÓN):**
+    * [Documentos críticos, RNP, ISOs, Anexos obligatorios]
+    * [Facturación requerida]
+
+    👷 **PERSONAL CLAVE (REQUISITOS TÉCNICOS):**
+    * [Cargo]: [Profesión exacta] | [Tiempo experiencia] | [Capacitaciones específicas]
+
+    🏆 **FACTORES DE EVALUACIÓN (PUNTAJE EXTRA):**
+    * [¿Qué da más puntos?]
     """
 
     payload = {"contents": []}
     
     if es_imagen:
         parts = [{"text": prompt}]
+        # Aquí enviamos TODAS las imágenes procesadas
         for img_path in texto_o_imagenes:
             with open(img_path, "rb") as image_file:
                 b64_data = base64.b64encode(image_file.read()).decode('utf-8')
                 parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64_data}})
         payload["contents"].append({"parts": parts})
     else:
-        full_text = f"{prompt}\n\nDOC:\n{texto_o_imagenes[:30000]}"
+        # Aumentamos el límite de caracteres para texto masivo
+        full_text = f"{prompt}\n\nDOCUMENTO COMPLETO:\n{texto_o_imagenes[:100000]}" 
         payload["contents"].append({"parts": [{"text": full_text}]})
 
     try:
@@ -161,34 +157,52 @@ def procesar_documento(ruta_archivo):
     ext = ruta_archivo.lower().split('.')[-1]
     texto_completo = ""
     
+    print(f"      📖 Leyendo documento completo: {os.path.basename(ruta_archivo)}")
+
     if ext in ['doc', 'docx']:
         texto_completo = extraer_texto_word(ruta_archivo)
     elif ext == 'pdf':
         try:
             with pdfplumber.open(ruta_archivo) as pdf:
-                for p in pdf.pages[:15]:
+                # --- SIN LÍMITES: Leemos TODAS las páginas ---
+                for p in pdf.pages:
                     t = p.extract_text()
                     if t: texto_completo += t + "\n"
         except: pass
     
     # Decisión: Texto vs Imagen
+    # Si hay poco texto digital (o es 0), asumimos que es ESCANEADO -> Modo Visión
     if len(texto_completo) < 500 and ext == 'pdf':
-        print("      👁️ Texto insuficiente. Activando Modo Visión...")
+        print("      👁️ Documento Escaneado detectado. Procesando TODAS las páginas (esto puede tomar un momento)...")
         try:
-            imagenes = convert_from_path(ruta_archivo, first_page=1, last_page=5)
+            # --- SIN LÍMITES: Convertimos TODAS las páginas a imágenes ---
+            # OJO: Si son 100 páginas, tomará un rato.
+            imagenes = convert_from_path(ruta_archivo) 
+            
             rutas_imgs = []
+            # Guardamos las imágenes temporalmente
             for i, img in enumerate(imagenes):
+                # Redimensionamos un poco para no explotar la API si son muchas
+                img = img.resize((1000, 1400)) 
                 tmp_path = os.path.join(DOWNLOAD_DIR, f"temp_{i}.jpg")
-                img.save(tmp_path, 'JPEG')
+                img.save(tmp_path, 'JPEG', quality=80)
                 rutas_imgs.append(tmp_path)
             
+            print(f"      📤 Enviando {len(rutas_imgs)} páginas a la IA...")
             res = analizar_con_ia_directo(rutas_imgs, es_imagen=True)
-            for r in rutas_imgs: os.remove(r)
+            
+            # Limpieza
+            for r in rutas_imgs: 
+                try: os.remove(r)
+                except: pass
             return res
-        except Exception as e: return f"Error OCR: {e}"
+            
+        except Exception as e: return f"Error OCR Masivo: {e}"
+        
     elif len(texto_completo) < 50:
-        return "Archivo vacío/ilegible."
+        return "⚠️ Archivo vacío o ilegible."
     else:
+        print(f"      📤 Enviando {len(texto_completo)} caracteres de texto a la IA...")
         return analizar_con_ia_directo(texto_completo, es_imagen=False)
 
 def restaurar_ubicacion(driver):
@@ -219,7 +233,7 @@ def restaurar_ubicacion(driver):
     except: return False
 
 def main():
-    print("Iniciando Robot 50.0 (AUTO-DESCUBRIMIENTO IA)...")
+    print("Iniciando Robot 53.0 (MODO EXPERTO SIN LÍMITES)...")
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
@@ -234,9 +248,7 @@ def main():
         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
         time.sleep(5)
         restaurar_ubicacion(driver)
-        
-        # PRECALENTAMIENTO: Buscar el nombre del modelo UNA vez al inicio
-        obtener_modelo_dinamico()
+        obtener_modelo_dinamico() 
         
         pag = 1
         while True:
@@ -280,7 +292,6 @@ def main():
                     if btn_ficha:
                         forzar_click(driver, btn_ficha)
                         time.sleep(6)
-                        
                         pdf_st = "Sin Archivo"; analisis = "Sin Doc"
                         
                         try:
@@ -319,14 +330,15 @@ def main():
                                 if f_path:
                                     enviar_telegram_archivo(f_path, f"📄 {nom}")
                                     pdf_st = "En Telegram ✅"
+                                    # LLAAMADA A LA IA SIN LÍMITES
                                     analisis = procesar_documento(f_path)
-                                    print(f"   🧠 IA Responde: {analisis[:30]}...")
+                                    print(f"   🧠 IA: Resumen generado correctamente.")
                                 else: print("   ❌ Timeout")
                             else: print("   ⚠️ Sin docs")
 
                         except Exception as e: print(f"   ErrDocs: {e}")
 
-                        rep = f"OBJETO: {obj}\n\n--- 🧠 ANÁLISIS IA ---\n{analisis}"
+                        rep = f"{analisis}"
                         payload = {"fecha_real": fecha, "desc": f"{nom}\n{desc}", "entidad": entidad, "pdf": pdf_st, "analisis": rep, "snip": snip, "cui": cui}
                         requests.post(WEBHOOK_URL, json=payload)
                         
