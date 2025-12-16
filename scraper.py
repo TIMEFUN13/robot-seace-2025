@@ -23,7 +23,7 @@ def forzar_click(driver, elemento):
     driver.execute_script("arguments[0].click();", elemento)
 
 def main():
-    print("Iniciando Robot 15.0 (Corrección de Paginador)...")
+    print("Iniciando Robot 16.0 (Modo Paciencia)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
@@ -81,8 +81,10 @@ def main():
             print(f"--- PROCESANDO PÁGINA {pagina_actual} ---")
             
             try:
-                # Esperamos que aparezca la tabla
+                # Esperar filas
                 WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
+                # PAUSA ESTRATÉGICA: Dar tiempo al paginador para que se actualice
+                time.sleep(3) 
             except:
                 print("⚠️ No hay filas o tardó mucho. Terminando.")
                 break
@@ -116,29 +118,38 @@ def main():
             
             procesos_totales += len(datos_lote)
 
-            # 3. PAGINACIÓN CORRECTA (TARGETEANDO EL DE ABAJO)
-            try:
-                # AQUÍ ESTÁ EL CAMBIO CLAVE: Buscamos dentro de .ui-paginator-bottom
-                next_btn = driver.find_element(By.CSS_SELECTOR, ".ui-paginator-bottom .ui-paginator-next")
-                
-                clases = next_btn.get_attribute("class")
-                # Imprimimos las clases para ver en el log qué está pasando
-                print(f"Estado botón Siguiente: '{clases}'")
-                
-                if "ui-state-disabled" in clases:
-                    print("✅ Botón deshabilitado (gris). Fin del camino.")
-                    break
-                
-                forzar_click(driver, next_btn)
-                print("Avanzando a siguiente página...")
-                time.sleep(12) # Damos 2 segundos extra para asegurar carga
-                pagina_actual += 1
-                
-                # Seguridad: Tope de 500 páginas (casi ilimitado, pero evita bucles infinitos por error)
-                if pagina_actual > 500: break
+            # 3. VERIFICACIÓN DOBLE DEL BOTÓN SIGUIENTE
+            print("Verificando botón Siguiente...")
+            boton_activo_encontrado = False
+            
+            # Intentamos 3 veces ver si el botón se activa
+            for intento in range(3):
+                try:
+                    next_btn = driver.find_element(By.CSS_SELECTOR, ".ui-paginator-bottom .ui-paginator-next")
+                    clases = next_btn.get_attribute("class")
                     
-            except Exception as e:
-                print(f"No encontré el paginador de abajo: {e}")
+                    if "ui-state-disabled" not in clases:
+                        # ¡EUREKA! El botón está vivo
+                        print(f"✅ Botón activo encontrado (Intento {intento+1}).")
+                        forzar_click(driver, next_btn)
+                        boton_activo_encontrado = True
+                        break # Salimos del mini-bucle de intentos
+                    else:
+                        print(f"Botón parece gris (Intento {intento+1}). Esperando 3 seg...")
+                        time.sleep(3)
+                except Exception as e:
+                    print(f"Error leyendo botón: {e}")
+                    time.sleep(3)
+            
+            if boton_activo_encontrado:
+                print("Avanzando a siguiente página...")
+                time.sleep(10) # Tiempo generoso para cargar la nueva tabla
+                pagina_actual += 1
+                if pagina_actual > 100: 
+                    print("Límite de seguridad 100 alcanzado.")
+                    break
+            else:
+                print("⛔ El botón siguió gris después de varios intentos. FIN REAL.")
                 break
 
         enviar_telegram_simple(f"✅ FIN. {procesos_totales} procesos en {pagina_actual} páginas.")
