@@ -27,70 +27,88 @@ def enviar_telegram(ruta_archivo, mensaje):
         return "Error"
 
 def main():
-    print("Iniciando Robot 6.0 (Modo Fotógrafo)...")
+    print("Iniciando Robot 7.0 (Corrección de Pestaña)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # User Agent para parecer PC real
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(options=chrome_options)
-    driver.set_window_size(1366, 768) # Tamaño de pantalla normal de laptop
+    driver.set_window_size(1920, 1080)
     
     try:
         url_seace = "https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml"
         driver.get(url_seace)
         print("Entrando al SEACE...")
-        time.sleep(8) 
+        time.sleep(5) 
         
-        # 1. SELECCIONAR AÑO (Lógica Reforzada)
-        print("Buscando selector de año...")
-        # Hacemos visible el select oculto
+        # --- PASO NUEVO: CAMBIAR DE PESTAÑA ---
+        print("Buscando pestaña 'Buscador de Procedimientos'...")
+        try:
+            # Buscamos el enlace que contiene el texto de la pestaña correcta
+            pestana = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Buscador de Procedimientos"))
+            )
+            pestana.click()
+            print("✅ ¡Clic en la pestaña correcta! Esperando carga...")
+            time.sleep(5) # Esperamos a que cambie la vista
+        except Exception as e:
+            print(f"⚠️ Error cambiando pestaña: {e}. Intentando forzar con JS...")
+            driver.execute_script("document.getElementById('frmBuscador:idTabBuscador_lbl').click();") # ID probable
+            time.sleep(5)
+
+        # 1. SELECCIONAR AÑO 2025 (Ahora en la pestaña correcta)
+        print("Aplicando Rayos X para listas...")
         driver.execute_script("var s = document.getElementsByTagName('select'); for(var i=0; i<s.length; i++){ s[i].style.display = 'block'; }")
         
         selects = driver.find_elements(By.TAG_NAME, "select")
         anio_ok = False
         
         for s in selects:
+            # Ahora que estamos en la pestaña correcta, el selector visible debería ser el bueno
             if "2025" in s.get_attribute("textContent"):
                 try:
                     Select(s).select_by_visible_text("2025")
-                    # REFUERZO: Disparar evento de cambio manualmente para que la página reaccione
+                    # Forzamos el evento change
                     driver.execute_script("arguments[0].dispatchEvent(new Event('change'));", s)
-                    print("Año 2025 seleccionado y evento 'change' disparado.")
+                    print("Año 2025 seleccionado.")
                     anio_ok = True
                     break
                 except:
                     continue
         
-        if not anio_ok:
-            print("⚠️ No pude seleccionar el año.")
-        
-        time.sleep(3) # Esperar a que la página procese el cambio de año
+        time.sleep(3)
 
         # 2. CLICK EN BUSCAR
         print("Buscando botón 'Buscar'...")
-        # Intento directo por ID (el más común en SEACE)
-        try:
-            btn = driver.find_element(By.ID, "frmBuscador:btnBuscar")
-            driver.execute_script("arguments[0].click();", btn)
-            print("Clic enviado al botón ID: frmBuscador:btnBuscar")
-        except:
-            # Plan B: Buscar por texto
-            print("Botón por ID no encontrado, buscando por texto...")
-            botones = driver.find_elements(By.XPATH, "//button[contains(text(),'Buscar')]")
-            if botones:
-                driver.execute_script("arguments[0].click();", botones[0])
-                print("Clic enviado al botón por Texto.")
+        # Al cambiar de pestaña, el botón correcto debería ser visible ahora
+        botones = driver.find_elements(By.XPATH, "//button[contains(text(),'Buscar')]")
+        
+        if botones:
+            # A veces hay 2 botones buscar (uno por pestaña), pulsamos el visible
+            for b in botones:
+                if b.is_displayed():
+                    b.click()
+                    print("Clic en botón Buscar VISIBLE.")
+                    break
             else:
-                print("❌ NO ENCONTRÉ EL BOTÓN BUSCAR.")
+                # Si ninguno reporta ser visible (por headless), pulsamos el último (suele ser el de la der)
+                driver.execute_script("arguments[0].click();", botones[-1])
+                print("Clic forzado en el último botón Buscar encontrado.")
+        else:
+            print("Probando botón por ID...")
+            try:
+                driver.find_element(By.ID, "frmBuscador:btnBuscar").click()
+                print("Clic por ID exitoso.")
+            except:
+                print("❌ No encontré botón Buscar.")
 
-        print("Esperando 15 segundos resultados...")
+        print("Esperando resultados (15s)...")
         time.sleep(15)
 
-        # 3. VERIFICAR RESULTADOS O TOMAR FOTO
+        # 3. VERIFICAR RESULTADOS
         filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]") 
         
         if filas:
@@ -98,32 +116,24 @@ def main():
             fila = filas[0]
             texto = fila.text.replace("\n", " ")
             
-            # Crear PDF prueba
-            with open("reporte.pdf", "w") as f: f.write(texto)
-            enviar_telegram("reporte.pdf", "¡Búsqueda Exitosa!")
+            # PDF y Telegram
+            with open("exito.pdf", "w") as f: f.write(texto)
+            enviar_telegram("exito.pdf", "¡Búsqueda Exitosa! (Pestaña Correcta)")
             
-            # Guardar en Sheets
-            payload = {"desc": texto[:100], "entidad": "SEACE", "pdf": "Telegram", "analisis": "OK"}
+            # Google Sheet
+            payload = {"desc": texto[:150], "entidad": "SEACE 7.0", "pdf": "Telegram", "analisis": f"Total: {len(filas)}"}
             requests.post(WEBHOOK_URL, json=payload)
             
         else:
-            print("❌ La tabla sigue vacía. ¡TOMANDO FOTO DEL ERROR!")
-            
-            # TOMA LA FOTO
-            driver.save_screenshot("error_pantalla.png")
-            print("Foto tomada. Enviando a Telegram...")
-            
-            # ENVÍA LA FOTO A TU TELEGRAM
-            enviar_telegram("error_pantalla.png", "⚠️ FOTO DEL ERROR: Mira qué pasó")
-            
-            # Imprime mensaje en log
-            print("Revisa tu Telegram, ahí está la respuesta visual.")
+            print("❌ Tabla vacía. Tomando foto de diagnóstico...")
+            driver.save_screenshot("error_tab.png")
+            enviar_telegram("error_tab.png", "FOTO: ¿Cambiamos de pestaña?")
+            print("Foto enviada a Telegram.")
 
     except Exception as e:
-        print(f"❌ ERROR CRÍTICO: {e}")
-        driver.save_screenshot("error_crash.png")
-        enviar_telegram("error_crash.png", f"Error Crash: {str(e)}")
-        
+        print(f"❌ ERROR: {e}")
+        driver.save_screenshot("crash.png")
+        enviar_telegram("crash.png", f"Crash: {e}")
     finally:
         driver.quit()
 
