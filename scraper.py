@@ -1,5 +1,5 @@
 import os
-import re # Módulo para buscar texto
+import re
 import time
 import requests
 from selenium import webdriver
@@ -17,10 +17,17 @@ CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 def enviar_telegram_simple(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': mensaje}
-    requests.post(url, data=data)
+    try:
+        requests.post(url, data=data)
+    except:
+        pass
+
+def forzar_click(driver, elemento):
+    """Función auxiliar para hacer clic sí o sí usando JavaScript"""
+    driver.execute_script("arguments[0].click();", elemento)
 
 def main():
-    print("Iniciando Robot 10.0 (Lector Inteligente de Paginación)...")
+    print("Iniciando Robot 11.0 (Tanque con Paginación)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
@@ -32,77 +39,114 @@ def main():
     driver.set_window_size(1920, 1080)
     
     try:
-        # 1. CONFIGURACIÓN INICIAL Y BÚSQUEDA
+        # 1. ENTRAR
         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
-        time.sleep(5)
+        time.sleep(8) # Más tiempo inicial
         
-        # Clic en pestaña "Buscador de Procedimientos"
-        WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Buscador de Procedimientos"))).click()
-        time.sleep(5)
+        # 2. CAMBIAR PESTAÑA (Modo Seguro)
+        print("Intentando cambiar pestaña...")
+        try:
+            pestana = WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.PARTIAL_LINK_TEXT, "Buscador de Procedimientos"))
+            )
+            forzar_click(driver, pestana)
+            print("✅ Pestaña clickeada (JS).")
+            time.sleep(8)
+        except Exception as e:
+            print(f"⚠️ Falla pestaña: {e}. Intentando por ID...")
+            try:
+                driver.execute_script("document.getElementById('frmBuscador:idTabBuscador_lbl').click();")
+                time.sleep(8)
+            except:
+                print("❌ No se pudo cambiar de pestaña. Esto podría fallar.")
 
-        # Seleccionar Año 2025
+        # 3. SELECCIONAR AÑO 2025 (Modo Seguro)
+        print("Buscando año 2025...")
+        # Desbloquear selects ocultos
         driver.execute_script("var s = document.getElementsByTagName('select'); for(var i=0; i<s.length; i++){ s[i].style.display = 'block'; }")
+        
         selects = driver.find_elements(By.TAG_NAME, "select")
+        anio_ok = False
         for s in selects:
             if "2025" in s.get_attribute("textContent"):
                 try:
                     Select(s).select_by_visible_text("2025")
                     driver.execute_script("arguments[0].dispatchEvent(new Event('change'));", s)
+                    print("✅ Año 2025 seleccionado.")
+                    anio_ok = True
                     break
                 except: continue
-        time.sleep(3)
-
-        # Clic en Buscar
-        id_btn = "tbBuscador:idFormBuscarProceso:btnBuscarSel"
-        driver.find_element(By.ID, id_btn).click()
-        print("Buscando... Esperando 15s...")
-        time.sleep(15)
-
-        # 2. LECTURA INTELIGENTE DEL LÍMITE DE PÁGINAS
-        total_paginas = 0
-        try:
-            # Buscar el elemento que contiene el texto de paginación ("Página 1/X")
-            paginador_texto = driver.find_element(By.CSS_SELECTOR, ".ui-paginator-page").find_element(By.XPATH, "../..").text
-            
-            # Usar Expresiones Regulares para encontrar el número después de "/"
-            # Busca: (un número) / (el número de páginas)
-            match = re.search(r'/\s*(\d+)', paginador_texto)
-            if match:
-                total_paginas = int(match.group(1))
-                print(f"✅ LÍMITE DETECTADO: El robot leerá {total_paginas} páginas.")
-            else:
-                total_paginas = 1 # Si no encuentra el patrón, asume que solo hay 1 página
-                print("⚠️ No se pudo detectar el límite de páginas. Asumiendo 1 página.")
-        except Exception as e:
-            print(f"Error al leer el paginador: {e}")
-            total_paginas = 1
         
+        if not anio_ok:
+            print("⚠️ No encontré el selector de año, seguiré igual por si acaso.")
+        
+        time.sleep(5)
+
+        # 4. CLIC EN BUSCAR (Modo Francotirador)
+        print("Buscando botón...")
+        id_btn = "tbBuscador:idFormBuscarProceso:btnBuscarSel"
+        try:
+            # Esperamos a que el botón exista en el DOM, aunque no sea interactable
+            btn = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, id_btn)))
+            forzar_click(driver, btn)
+            print("✅ Clic forzado en Buscar.")
+        except:
+            print("⚠️ Botón por ID no encontrado. Buscando por clase...")
+            botones = driver.find_elements(By.CSS_SELECTOR, ".btnBuscar_buscadorProcesos")
+            if botones:
+                forzar_click(driver, botones[0])
+            else:
+                print("❌ No encontré ningún botón de buscar.")
+
+        print("Esperando tabla de resultados (20s)...")
+        time.sleep(20)
+
+        # 5. LECTURA INTELIGENTE DE PÁGINAS
+        total_paginas = 1
+        try:
+            # Buscamos el texto "Página: 1/X"
+            # Usamos un selector CSS genérico para el paginador de abajo
+            paginadores = driver.find_elements(By.CLASS_NAME, "ui-paginator-current")
+            if paginadores:
+                texto_pag = paginadores[0].text # Ejemplo: "( Página: 1/34 )"
+                print(f"Texto paginador encontrado: {texto_pag}")
+                
+                match = re.search(r'/\s*(\d+)', texto_pag)
+                if match:
+                    total_paginas = int(match.group(1))
+                    print(f"✅ LÍMITE DETECTADO: {total_paginas} páginas.")
+            else:
+                print("⚠️ No vi el texto de paginación. Asumo 1 página.")
+        except Exception as e:
+            print(f"Error leve leyendo paginador: {e}")
+
         # --- BUCLE DE PAGINACIÓN ---
         pagina_actual = 1
         procesos_totales = 0
         
         while pagina_actual <= total_paginas:
-            print(f"--- Procesando PÁGINA {pagina_actual} de {total_paginas} ---")
+            print(f"--- LEYENDO PÁGINA {pagina_actual}/{total_paginas} ---")
             
-            # Esperar a que la tabla cargue (la tabla de resultados tiene el ID tbBuscador:idFormBuscarProceso:dataTableResultados)
-            WebDriverWait(driver, 30).until(
-                EC.presence_of_element_located((By.ID, "tbBuscador:idFormBuscarProceso:dataTableResultados"))
-            )
+            # Esperar tabla
+            try:
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]"))
+                )
+            except:
+                print("⚠️ No cargaron filas en esta página.")
             
             filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
             
             if not filas:
-                print("No se encontraron filas de resultados en esta página.")
+                print("Fin de los datos o error de carga.")
                 break
 
-            datos_lote = [] 
-
+            datos_lote = []
             for fila in filas:
                 try:
-                    # EXTRAER DATOS COLUMNA POR COLUMNA
                     celdas = fila.find_elements(By.TAG_NAME, "td")
-                    
-                    if len(celdas) > 5:
+                    if len(celdas) > 6:
+                        # Extraemos datos limpiamente
                         entidad = celdas[1].text
                         fecha = celdas[2].text
                         nomenclatura = celdas[3].text
@@ -113,49 +157,48 @@ def main():
                             "desc": f"{nomenclatura} - {descripcion}", 
                             "entidad": entidad,
                             "pdf": "Pendiente",
-                            "analisis": f"{objeto} | Pub: {fecha}"
+                            "analisis": f"{objeto} | {fecha}"
                         })
-                except Exception as e:
-                    print(f"Error leyendo una fila: {e}")
-                    continue
+                except: continue
 
-            # ENVIAR LOTE A GOOGLE SHEETS
+            # Enviar a Google Sheets
             for dato in datos_lote:
                 requests.post(WEBHOOK_URL, json=dato)
                 procesos_totales += 1
             
-            print(f"Enviados {len(datos_lote)} procesos al Excel. Acumulado: {procesos_totales}")
+            print(f"Enviados {len(datos_lote)} procesos. Total acumulado: {procesos_totales}")
 
-            # --- AVANZAR A LA SIGUIENTE PÁGINA ---
+            # Siguiente página
             if pagina_actual < total_paginas:
                 try:
-                    btn_siguiente = driver.find_elements(By.CSS_SELECTOR, ".ui-paginator-next")
-                    
-                    if btn_siguiente and "ui-state-disabled" not in btn_siguiente[0].get_attribute("class"):
-                        # Usamos Javascript para asegurar el clic del paginador
-                        driver.execute_script("arguments[0].click();", btn_siguiente[0])
-                        print("Avanzando...")
-                        time.sleep(8) 
+                    # Buscamos el botón "Siguiente" por su clase de icono
+                    next_btns = driver.find_elements(By.CSS_SELECTOR, ".ui-paginator-next")
+                    if next_btns:
+                        # Verificar si está deshabilitado
+                        clases = next_btns[0].get_attribute("class")
+                        if "ui-state-disabled" in clases:
+                            print("Botón siguiente deshabilitado. Fin.")
+                            break
+                        
+                        forzar_click(driver, next_btns[0])
+                        print("Avanzando de página...")
+                        time.sleep(10) # Tiempo generoso para carga
                         pagina_actual += 1
                     else:
-                        print("Última página alcanzada (botón deshabilitado).")
                         break
                 except Exception as e:
-                    print(f"Error al cambiar página: {e}. Finalizando bucle.")
+                    print(f"Error cambiando página: {e}")
                     break
             else:
-                break # Si pagina_actual == total_paginas, salimos
+                break
 
-        enviar_telegram_simple(f"✅ ¡Misión Cumplida! Se extrajeron {procesos_totales} procesos de {total_paginas} páginas.")
+        enviar_telegram_simple(f"✅ Robot finalizado. Se extrajeron {procesos_totales} procesos de {total_paginas} páginas.")
 
     except Exception as e:
         print(f"❌ ERROR CRÍTICO: {e}")
-        # Intenta tomar captura en caso de error crítico
         try:
             driver.save_screenshot("crash.png")
-            enviar_telegram_simple(f"Crash: {e}. Revisa la captura en el log.")
-        except:
-            enviar_telegram_simple(f"Crash: {e}. No se pudo tomar captura.")
+        except: pass
     finally:
         driver.quit()
 
