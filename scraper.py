@@ -23,19 +23,20 @@ def forzar_click(driver, elemento):
     driver.execute_script("arguments[0].click();", elemento)
 
 def main():
-    print("Iniciando Robot 16.0 (Modo Paciencia)...")
+    print("Iniciando Robot 19.0 (El Vigilante de Datos)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    # User Agent para evitar bloqueos
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(options=chrome_options)
     driver.set_window_size(1920, 1080)
     
     try:
-        # 1. NAVEGACIÓN
+        # 1. NAVEGACIÓN Y FILTROS
         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
         time.sleep(8)
         
@@ -73,25 +74,27 @@ def main():
         print("Esperando tabla (20s)...")
         time.sleep(20)
 
-        # 2. BUCLE INFINITO
+        # 2. BUCLE INTELIGENTE
         pagina_actual = 1
         procesos_totales = 0
         
         while True:
-            print(f"--- PROCESANDO PÁGINA {pagina_actual} ---")
+            print(f"--- PÁGINA {pagina_actual} ---")
             
+            # Esperar a que haya filas
             try:
-                # Esperar filas
                 WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
-                # PAUSA ESTRATÉGICA: Dar tiempo al paginador para que se actualice
-                time.sleep(3) 
             except:
-                print("⚠️ No hay filas o tardó mucho. Terminando.")
+                print("⚠️ No hay filas. Fin.")
                 break
 
             filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
             if not filas: break
 
+            # GUARDAMOS EL PRIMER DATO COMO "HUELLA DIGITAL" DE ESTA PÁGINA
+            huella_digital_actual = filas[0].text
+            
+            # Extraer y Enviar Datos
             datos_lote = []
             for fila in filas:
                 try:
@@ -100,14 +103,14 @@ def main():
                         entidad = celdas[1].text
                         fecha_pub = celdas[2].text
                         nomenclatura = celdas[3].text
-                        objeto = celdas[5].text
+                        objeto = celdas[5].text 
                         descripcion = celdas[6].text
                         
                         datos_lote.append({
                             "desc": f"{nomenclatura}\n{descripcion}",
                             "entidad": entidad,
-                            "pdf": "Ver Link",
-                            "analisis": objeto, 
+                            "pdf": "Pendiente",
+                            "analisis": objeto,
                             "fecha_real": fecha_pub
                         })
                 except: continue
@@ -118,41 +121,52 @@ def main():
             
             procesos_totales += len(datos_lote)
 
-            # 3. VERIFICACIÓN DOBLE DEL BOTÓN SIGUIENTE
-            print("Verificando botón Siguiente...")
-            boton_activo_encontrado = False
-            
-            # Intentamos 3 veces ver si el botón se activa
-            for intento in range(3):
-                try:
-                    next_btn = driver.find_element(By.CSS_SELECTOR, ".ui-paginator-bottom .ui-paginator-next")
-                    clases = next_btn.get_attribute("class")
-                    
-                    if "ui-state-disabled" not in clases:
-                        # ¡EUREKA! El botón está vivo
-                        print(f"✅ Botón activo encontrado (Intento {intento+1}).")
-                        forzar_click(driver, next_btn)
-                        boton_activo_encontrado = True
-                        break # Salimos del mini-bucle de intentos
-                    else:
-                        print(f"Botón parece gris (Intento {intento+1}). Esperando 3 seg...")
-                        time.sleep(3)
-                except Exception as e:
-                    print(f"Error leyendo botón: {e}")
-                    time.sleep(3)
-            
-            if boton_activo_encontrado:
-                print("Avanzando a siguiente página...")
-                time.sleep(10) # Tiempo generoso para cargar la nueva tabla
-                pagina_actual += 1
-                if pagina_actual > 100: 
-                    print("Límite de seguridad 100 alcanzado.")
+            # 3. CAMBIAR PÁGINA (LÓGICA EL VIGILANTE)
+            try:
+                # Buscamos el botón correcto (El de abajo)
+                # Selector ajustado a tu imagen: .ui-paginator-bottom .ui-paginator-next
+                next_btn = driver.find_element(By.CSS_SELECTOR, ".ui-paginator-bottom .ui-paginator-next")
+                
+                clases = next_btn.get_attribute("class")
+                if "ui-state-disabled" in clases:
+                    print("⛔ Botón gris detectado. Fin del camino.")
                     break
-            else:
-                print("⛔ El botón siguió gris después de varios intentos. FIN REAL.")
+                
+                print("Haciendo CLIC en Siguiente...")
+                forzar_click(driver, next_btn)
+                
+                # --- LA MAGIA: ESPERAR A QUE LA TABLA CAMBIE ---
+                print("Vigilando que los datos cambien...")
+                datos_cambiaron = False
+                
+                # Esperamos hasta 20 segundos chequeando cada segundo
+                for i in range(20):
+                    time.sleep(1)
+                    try:
+                        nuevas_filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
+                        if not nuevas_filas: continue
+                        
+                        nueva_huella = nuevas_filas[0].text
+                        
+                        # Si la primera fila es DIFERENTE a la anterior, significa que la página cambió
+                        if nueva_huella != huella_digital_actual:
+                            print(f"✅ ¡Datos cambiaron! Estamos en página nueva.")
+                            datos_cambiaron = True
+                            break
+                    except: pass
+                
+                if not datos_cambiaron:
+                    print("⚠️ Los datos NO cambiaron después de 20s. Asumo que se acabó.")
+                    break
+                
+                pagina_actual += 1
+                if pagina_actual > 100: break # Límite seguridad
+                    
+            except Exception as e:
+                print(f"Error paginación: {e}")
                 break
 
-        enviar_telegram_simple(f"✅ FIN. {procesos_totales} procesos en {pagina_actual} páginas.")
+        enviar_telegram_simple(f"✅ FIN TOTAL. {procesos_totales} procesos extraídos.")
 
     except Exception as e:
         print(f"❌ CRASH: {e}")
