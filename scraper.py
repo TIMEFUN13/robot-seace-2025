@@ -57,7 +57,8 @@ def analizar_con_ia_gemini(ruta_pdf):
     texto_completo = ""
     try:
         with pdfplumber.open(ruta_pdf) as pdf:
-            for p in pdf.pages[:10]:
+            # Leemos primeras 15 paginas para asegurar captar los requisitos
+            for p in pdf.pages[:15]:
                 t = p.extract_text()
                 if t: texto_completo += t + "\n"
     except Exception as e: return f"Error lectura PDF: {e}"
@@ -65,22 +66,36 @@ def analizar_con_ia_gemini(ruta_pdf):
     if len(texto_completo) < 50: return "PDF imagen/ilegible."
 
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # CAMBIO CLAVE: Usamos el nombre específico para evitar error 404
+        model = genai.GenerativeModel('gemini-1.5-flash-001') 
+        
         prompt = f"""
         Eres un Ingeniero de Licitaciones. Analiza este TDR del SEACE.
-        {texto_completo[:25000]}
+        {texto_completo[:30000]}
         
-        Extrae REQUISITOS DEL PERSONAL CLAVE.
-        Si no hay, resume el OBJETO DEL SERVICIO.
+        Tu misión es extraer los REQUISITOS DEL PERSONAL CLAVE (Ingenieros, Técnicos, etc).
+        Busca secciones como "Perfil del Personal", "Requerimientos Técnicos" o "Personal Propuesto".
+        
+        Si NO encuentras personal clave, resume el ALCANCE DEL SERVICIO.
 
-        Responde EXACTAMENTE con este formato:
-        👷 **[CARGO 1]**: [Profesión]
-        🕒 [Experiencia requerida]
-        👷 **[CARGO 2]**: [Profesión]...
+        Responde EXACTAMENTE con este formato (Sin introducciones):
+        
+        👷 **[CARGO]**: [Profesión/Título]
+        🕒 [Experiencia Específica (Años/Meses)]
+        🎓 [Otros: Maestría, Colegiatura, etc.]
+        
+        (Repite para cada cargo importante)
         """
         response = model.generate_content(prompt)
         return response.text.strip()
-    except Exception as e: return f"Error IA: {e}"
+    except Exception as e: 
+        # Si falla el Flash, intentamos con Pro como respaldo
+        try:
+            model_backup = genai.GenerativeModel('gemini-pro')
+            response = model_backup.generate_content(prompt)
+            return response.text.strip()
+        except:
+            return f"Error IA: {e}"
 
 def extraer_dato_popup(driver, boton_lupa, tipo):
     try:
@@ -117,7 +132,7 @@ def recuperar_pagina(driver, pagina_objetivo):
     return False
 
 def main():
-    print("Iniciando Robot 33.0 (EL CIRUJANO)...")
+    print("Iniciando Robot 34.0 (EL AFINADO)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
@@ -138,7 +153,7 @@ def main():
         except: pass
         time.sleep(5)
 
-        # AÑO 2025 (Inyección JS)
+        # AÑO 2025
         driver.execute_script("var s = document.getElementsByTagName('select'); for(var i=0; i<s.length; i++){ s[i].style.display = 'block'; }")
         selects = driver.find_elements(By.TAG_NAME, "select")
         for s in selects:
@@ -147,13 +162,10 @@ def main():
                 break
         time.sleep(5)
 
-        # BUSCAR (JS Forzado para evitar timeout)
+        # BUSCAR
         print("Buscando...")
-        try:
-            # Intentamos click JS directo al ID del botón
-            driver.execute_script("document.getElementById('tbBuscador:idFormBuscarProceso:btnBuscarSel').click();")
-        except:
-            driver.execute_script("document.querySelector('.btnBuscar_buscadorProcesos').click();")
+        try: driver.execute_script("document.getElementById('tbBuscador:idFormBuscarProceso:btnBuscarSel').click();")
+        except: driver.execute_script("document.querySelector('.btnBuscar_buscadorProcesos').click();")
         
         print("Esperando tabla (60s)...")
         WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
@@ -162,6 +174,10 @@ def main():
         
         while True:
             print(f"--- ⛏️ PÁGINA {pag} ---")
+            
+            # PAUSA DE ESTABILIZACIÓN (Para que no salgan columnas vacías)
+            time.sleep(3)
+            
             filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
             if not filas: break
 
@@ -172,11 +188,12 @@ def main():
                     row = filas[i]
                     cols = row.find_elements(By.TAG_NAME, "td")
                     
-                    entidad = cols[1].text
-                    fecha = cols[2].text
-                    nom = cols[3].text
-                    obj = cols[5].text
-                    desc = cols[6].text
+                    # Extracción con validación básica
+                    entidad = cols[1].text if len(cols) > 1 else "Error Entidad"
+                    fecha = cols[2].text if len(cols) > 2 else ""
+                    nom = cols[3].text if len(cols) > 3 else ""
+                    obj = cols[5].text if len(cols) > 5 else ""
+                    desc = cols[6].text if len(cols) > 6 else ""
                     
                     if MODO_SOLO_HOY and not es_fecha_hoy(fecha): continue
 
@@ -200,57 +217,43 @@ def main():
                         analisis = "Sin PDF para analizar"
                         
                         try:
-                            # 1. Limpiar carpeta
                             for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")): os.remove(f)
-                            
-                            # 2. Esperar tabla
                             WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID,"tbFicha:dtDocumentos_data")))
                             
-                            # 3. LÓGICA INFALIBLE: BUSCAR ENLACES CON 'descargaDocGeneral'
-                            # Buscamos todos los <a> que tengan ese script en su onclick
                             enlaces_descarga = driver.find_elements(By.CSS_SELECTOR, "a[onclick*='descargaDocGeneral']")
-                            
                             target_link = None
                             
-                            # Prioridad: Bases
+                            # Prioridad Bases
                             for lnk in enlaces_descarga:
-                                # A veces el texto está en el <a>, a veces en la fila
                                 try:
                                     fila_padre = lnk.find_element(By.XPATH, "./../..")
                                     texto_fila = fila_padre.text.upper()
                                     if "BASES" in texto_fila or "ADMINISTRATIVAS" in texto_fila:
-                                        target_link = lnk
-                                        print("🎯 Encontradas Bases Administrativas")
-                                        break
+                                        target_link = lnk; break
                                 except: pass
                             
-                            # Si no hay bases, agarramos el primero que tenga el script
-                            if not target_link and enlaces_descarga:
-                                target_link = enlaces_descarga[0]
-                                print("⚠️ Usando primer documento disponible")
+                            if not target_link and enlaces_descarga: target_link = enlaces_descarga[0]
 
                             if target_link:
-                                print(f"⬇️ Ejecutando descargaDocGeneral...")
+                                print(f"⬇️ Descargando doc...")
                                 forzar_click(driver, target_link)
-                                
                                 f_path = None
                                 for _ in range(25):
                                     time.sleep(1)
                                     fs = glob.glob(os.path.join(DOWNLOAD_DIR, "*"))
-                                    if fs and not fs[0].endswith('.crdownload'): 
-                                        f_path = fs[0]; break
+                                    if fs and not fs[0].endswith('.crdownload'): f_path = fs[0]; break
                                 
                                 if f_path:
                                     enviar_telegram_archivo(f_path, f"📄 {nom}")
                                     pdf_st = "En Telegram ✅"
+                                    # Analisis IA
                                     analisis = analizar_con_ia_gemini(f_path)
                                     print(f"🧠 IA Responde: {analisis[:30]}...")
-                                else: print("❌ Timeout esperando archivo")
-                            else: print("⚠️ No se encontraron enlaces de descarga válidos")
+                                else: print("❌ Timeout archivo")
+                            else: print("⚠️ Sin enlace de descarga")
 
-                        except Exception as e: print(f"Error Docs: {e}")
+                        except Exception as e: print(f"ErrDocs: {e}")
 
-                        # CRONOGRAMA
                         crono = ""
                         try:
                             t = driver.find_element(By.ID, "tbFicha:dtCronograma_data")
@@ -269,7 +272,6 @@ def main():
                         }
                         requests.post(WEBHOOK_URL, json=payload)
                         
-                        # SALIR
                         try: 
                             b = driver.find_element(By.XPATH, "//button[contains(text(),'Regresar')]")
                             forzar_click(driver, b)
