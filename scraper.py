@@ -35,6 +35,7 @@ def enviar_telegram_archivo(ruta_archivo, caption):
     except: return False
 
 def forzar_click(driver, elemento):
+    # Solo para elementos rebeldes que no sean el boton principal
     driver.execute_script("arguments[0].click();", elemento)
 
 def es_fecha_hoy(fecha_texto):
@@ -99,7 +100,6 @@ def extraer_dato_popup(driver, boton_lupa, tipo):
                     forzar_click(driver, c)
                 except: webdriver.ActionChains(driver).send_keys(u'\ue00c').perform()
                 break
-        
         limpio = texto.replace("Código SNIP", "").replace("Código Unico de Inversion", "").replace("Cerrar", "").strip()
         return limpiar_texto_snip(limpio)
     except: return "Error"
@@ -121,7 +121,7 @@ def recuperar_pagina(driver, pagina_objetivo):
     return False
 
 def main():
-    print("Iniciando Robot 30.0 (EL PACIENTE)...")
+    print("Iniciando Robot 31.0 (EL CLÁSICO + IA)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
@@ -137,13 +137,17 @@ def main():
     try:
         # 1. NAVEGACIÓN
         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
-        time.sleep(10) # Más tiempo inicial
+        time.sleep(8)
         
-        try: driver.execute_script("document.getElementById('frmBuscador:idTabBuscador_lbl').click();")
-        except: pass
+        # Pestaña (Clic natural si es posible)
+        try:
+            pestana = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Buscador de Procedimientos")))
+            pestana.click()
+        except:
+            driver.execute_script("document.getElementById('frmBuscador:idTabBuscador_lbl').click();")
         time.sleep(5)
 
-        # 2. AÑO 2025
+        # 2. AÑO 2025 (Inyección JS segura)
         print("Seteando 2025...")
         driver.execute_script("var s = document.getElementsByTagName('select'); for(var i=0; i<s.length; i++){ s[i].style.display = 'block'; }")
         selects = driver.find_elements(By.TAG_NAME, "select")
@@ -151,40 +155,30 @@ def main():
             if "2025" in s.get_attribute("textContent"):
                 driver.execute_script("arguments[0].value = '2025'; arguments[0].dispatchEvent(new Event('change'));", s)
                 break
-        time.sleep(5)
+        time.sleep(3)
 
-        # 3. BUSCAR (Con reintento)
-        print("Clic en Buscar...")
-        try: 
+        # 3. BUSCAR (REGRESO AL CLIC NATURAL)
+        print("Clic en Buscar (Natural)...")
+        try:
+            # Intentamos buscar el botón por ID y darle clic NORMAL
             btn = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "tbBuscador:idFormBuscarProceso:btnBuscarSel")))
-            forzar_click(driver, btn)
-        except: 
-            driver.execute_script("document.querySelector('.btnBuscar_buscadorProcesos').click();")
+            btn.click() 
+        except:
+            print("⚠️ Clic natural falló, intentando JS...")
+            driver.execute_script("document.getElementById('tbBuscador:idFormBuscarProceso:btnBuscarSel').click();")
         
-        print("Esperando tabla de resultados (60s máx)...")
-        time.sleep(5) # Espera técnica
+        # Espera inteligente (hasta 60s, pero revisa cada 1s)
+        print("Esperando tabla...")
+        WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
         
         pag = 1
         total = 0
         
         while True:
             print(f"--- ⛏️ PÁGINA {pag} ---")
-            
-            # --- CORRECCIÓN CLAVE: 60 SEGUNDOS DE ESPERA ---
-            try: 
-                WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
-            except: 
-                print("❌ ERROR: La tabla no cargó en 60 segundos. Posible error de SEACE o filtro vacío.")
-                # Intento de captura de pantalla para debug (si fuera posible verla)
-                print(driver.page_source[:500]) # Imprime un poco de HTML para ver si hay error
-                break
-
             filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
-            if not filas:
-                print("⚠️ Tabla vacía.")
-                break
-                
-            print(f"✅ Encontrados {len(filas)} procesos. Procesando...")
+            
+            if not filas: break
 
             for i in range(len(filas)):
                 try:
@@ -213,7 +207,8 @@ def main():
                     
                     try:
                         btn_ficha = row.find_element(By.CSS_SELECTOR, "[id$=':grafichaSel']")
-                        forzar_click(driver, btn_ficha)
+                        # Clic forzado en ficha es OK, el buscador es el delicado
+                        forzar_click(driver, btn_ficha) 
                         time.sleep(5)
                         
                         pdf_st = "Sin Archivo"
@@ -242,7 +237,7 @@ def main():
                                     except: pass
 
                             if target_link:
-                                print(f"⬇️ Descargando para {nom[:15]}...")
+                                print(f"⬇️ Descargando {nom[:20]}...")
                                 forzar_click(driver, target_link)
                                 f_path = None
                                 for _ in range(20):
@@ -255,8 +250,8 @@ def main():
                                     pdf_st = "En Telegram ✅"
                                     analisis = analizar_con_ia_gemini(f_path)
                                     print(f"🧠 IA: {analisis[:30]}...")
-                                else: print("Tiempo descarga agotado")
-                            else: print("No se detectó link PDF")
+                                else: print("Timeout Descarga")
+                            else: print("No PDF Link")
 
                         except Exception as e: print(f"ErrDocs: {e}")
 
@@ -281,7 +276,7 @@ def main():
                         
                         try: 
                             b = driver.find_element(By.XPATH, "//button[contains(text(),'Regresar')]")
-                            forzar_click(driver, b)
+                            b.click()
                         except: driver.execute_script("window.history.back();")
                         
                         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
@@ -293,7 +288,7 @@ def main():
                         continue
                 except: continue
 
-            print(f"✅ Pág {pag} terminada.")
+            print(f"✅ Pág {pag} Ok.")
             try:
                 pb = driver.find_element(By.ID, "tbBuscador:idFormBuscarProceso:dtProcesos_paginator_bottom")
                 nxt = pb.find_element(By.CSS_SELECTOR, ".ui-paginator-next")
