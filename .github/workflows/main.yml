@@ -2,8 +2,8 @@ name: Robot SEACE
 
 on:
   schedule:
-    - cron: '0 13 * * *' # Corre todos los días a las 8:00 AM Perú (13:00 UTC)
-  workflow_dispatch: # Permite botón manual
+    - cron: '0 13 * * *' # 8:00 AM Perú
+  workflow_dispatch:
 
 jobs:
   run-robot:
@@ -14,7 +14,7 @@ jobs:
       - name: Instalar Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.10' # Actualizado para evitar errores de librerías nuevas
 
       - name: Instalar Librerías
         run: |
