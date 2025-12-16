@@ -27,7 +27,7 @@ def enviar_telegram(ruta_archivo, mensaje):
         return "Error"
 
 def main():
-    print("Iniciando Robot 7.0 (Corrección de Pestaña)...")
+    print("Iniciando Robot 8.0 (ID Francotirador)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
@@ -44,71 +44,60 @@ def main():
         print("Entrando al SEACE...")
         time.sleep(5) 
         
-        # --- PASO NUEVO: CAMBIAR DE PESTAÑA ---
+        # 1. CAMBIAR DE PESTAÑA
         print("Buscando pestaña 'Buscador de Procedimientos'...")
         try:
-            # Buscamos el enlace que contiene el texto de la pestaña correcta
             pestana = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Buscador de Procedimientos"))
             )
             pestana.click()
             print("✅ ¡Clic en la pestaña correcta! Esperando carga...")
-            time.sleep(5) # Esperamos a que cambie la vista
-        except Exception as e:
-            print(f"⚠️ Error cambiando pestaña: {e}. Intentando forzar con JS...")
-            driver.execute_script("document.getElementById('frmBuscador:idTabBuscador_lbl').click();") # ID probable
             time.sleep(5)
+        except Exception as e:
+            print(f"⚠️ Error cambiando pestaña: {e}")
 
-        # 1. SELECCIONAR AÑO 2025 (Ahora en la pestaña correcta)
+        # 2. SELECCIONAR AÑO 2025
         print("Aplicando Rayos X para listas...")
         driver.execute_script("var s = document.getElementsByTagName('select'); for(var i=0; i<s.length; i++){ s[i].style.display = 'block'; }")
         
         selects = driver.find_elements(By.TAG_NAME, "select")
-        anio_ok = False
-        
         for s in selects:
-            # Ahora que estamos en la pestaña correcta, el selector visible debería ser el bueno
             if "2025" in s.get_attribute("textContent"):
                 try:
                     Select(s).select_by_visible_text("2025")
-                    # Forzamos el evento change
                     driver.execute_script("arguments[0].dispatchEvent(new Event('change'));", s)
                     print("Año 2025 seleccionado.")
-                    anio_ok = True
                     break
                 except:
                     continue
         
         time.sleep(3)
 
-        # 2. CLICK EN BUSCAR
-        print("Buscando botón 'Buscar'...")
-        # Al cambiar de pestaña, el botón correcto debería ser visible ahora
-        botones = driver.find_elements(By.XPATH, "//button[contains(text(),'Buscar')]")
+        # 3. CLICK EN BUSCAR (CON EL ID QUE ENCONTRASTE)
+        print("Buscando botón con ID exacto...")
         
-        if botones:
-            # A veces hay 2 botones buscar (uno por pestaña), pulsamos el visible
-            for b in botones:
-                if b.is_displayed():
-                    b.click()
-                    print("Clic en botón Buscar VISIBLE.")
-                    break
-            else:
-                # Si ninguno reporta ser visible (por headless), pulsamos el último (suele ser el de la der)
-                driver.execute_script("arguments[0].click();", botones[-1])
-                print("Clic forzado en el último botón Buscar encontrado.")
-        else:
-            print("Probando botón por ID...")
+        # ID DESCUBIERTO EN TU FOTO: tbBuscador:idFormBuscarProceso:btnBuscarSel
+        id_francotirador = "tbBuscador:idFormBuscarProceso:btnBuscarSel"
+        
+        try:
+            # Opción A: Clic directo por ID
+            btn = driver.find_element(By.ID, id_francotirador)
+            driver.execute_script("arguments[0].click();", btn)
+            print(f"✅ ¡CLIC CONFIRMADO en ID: {id_francotirador}!")
+        except:
+            print("⚠️ Falla por ID exacto. Probando por clase CSS específica...")
+            # Opción B: Por la clase única que también sale en tu foto
             try:
-                driver.find_element(By.ID, "frmBuscador:btnBuscar").click()
-                print("Clic por ID exitoso.")
-            except:
-                print("❌ No encontré botón Buscar.")
+                btn = driver.find_element(By.CSS_SELECTOR, ".btnBuscar_buscadorProcesos")
+                driver.execute_script("arguments[0].click();", btn)
+                print("✅ ¡CLIC CONFIRMADO por Clase CSS!")
+            except Exception as e:
+                 print(f"❌ Error crítico al buscar botón: {e}")
 
-        print("Esperando resultados (15s)...")
+        print("Esperando 15 segundos resultados...")
         time.sleep(15)
 
-        # 3. VERIFICAR RESULTADOS
+        # 4. VERIFICAR RESULTADOS
         filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]") 
         
         if filas:
@@ -118,17 +107,17 @@ def main():
             
             # PDF y Telegram
             with open("exito.pdf", "w") as f: f.write(texto)
-            enviar_telegram("exito.pdf", "¡Búsqueda Exitosa! (Pestaña Correcta)")
+            enviar_telegram("exito.pdf", f"¡VICTORIA! {len(filas)} procesos encontrados.")
             
             # Google Sheet
-            payload = {"desc": texto[:150], "entidad": "SEACE 7.0", "pdf": "Telegram", "analisis": f"Total: {len(filas)}"}
+            payload = {"desc": texto[:150], "entidad": "SEACE 8.0", "pdf": "Telegram", "analisis": "Tabla Encontrada"}
             requests.post(WEBHOOK_URL, json=payload)
             
         else:
-            print("❌ Tabla vacía. Tomando foto de diagnóstico...")
-            driver.save_screenshot("error_tab.png")
-            enviar_telegram("error_tab.png", "FOTO: ¿Cambiamos de pestaña?")
-            print("Foto enviada a Telegram.")
+            print("❌ Tabla vacía. Tomando foto...")
+            driver.save_screenshot("error_final.png")
+            enviar_telegram("error_final.png", "FOTO: Botón presionado, pero sin datos.")
+            print("Foto enviada.")
 
     except Exception as e:
         print(f"❌ ERROR: {e}")
