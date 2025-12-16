@@ -19,93 +19,87 @@ def enviar_telegram(ruta_pdf, nombre_archivo):
         with open(ruta_pdf, 'rb') as f:
             files = {'document': f}
             data = {'chat_id': CHAT_ID, 'caption': f"📄 Bases: {nombre_archivo}"}
-            r = requests.post(url, files=files, data=data)
-            # Intentamos obtener el link del mensaje (truco de Telegram)
-            return "Ver en Telegram (Canal)" 
+            requests.post(url, files=files, data=data)
+            return "Ver en Telegram"
     except Exception as e:
         print(f"Error Telegram: {e}")
         return "Error al subir"
 
-def analizar_pdf(ruta_pdf):
-    texto = ""
-    try:
-        with pdfplumber.open(ruta_pdf) as pdf:
-            # Leemos solo primeras 3 paginas para velocidad
-            for page in pdf.pages[:3]:
-                texto += page.extract_text() or ""
-        
-        analisis = []
-        texto_lower = texto.lower()
-        
-        # BUSCADOR DE PALABRAS CLAVE (Aquí puedes añadir más)
-        if "ingeniero civil" in texto_lower: analisis.append("Piden Ing. Civil")
-        if "carta fianza" in texto_lower: analisis.append("Requiere Carta Fianza")
-        if "años de experiencia" in texto_lower: analisis.append("Mencionan experiencia específica")
-        
-        return ", ".join(analisis) if analisis else "Sin alertas detectadas"
-    except:
-        return "No se pudo leer PDF"
-
 def main():
-    print("Iniciando Robot...")
+    print("Iniciando Robot 2.0...")
     
-    # Configuración de Chrome para GitHub Actions
     chrome_options = Options()
-    chrome_options.add_argument("--headless") # Sin pantalla
+    chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    # Agregamos un User-Agent para parecer un navegador real y evitar bloqueos
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36")
     
     driver = webdriver.Chrome(options=chrome_options)
     
     try:
         # 1. ENTRAR AL SEACE
-        driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
-        print("Página cargada.")
+        url_seace = "https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml"
+        print(f"Entrando a: {url_seace}")
+        driver.get(url_seace)
         
-        # Esperar un momento a que cargue
-        time.sleep(5)
+        # DIAGNÓSTICO: Imprimir el título de la página para saber si nos bloquearon
+        print(f"TÍTULO DE LA PÁGINA: {driver.title}")
         
-        # 2. SIMULACIÓN DE BÚSQUEDA (Clic en Buscar)
-        # Nota: Aquí normalmente llenaríamos filtros. Por ahora buscamos lo que haya hoy.
-        btn_buscar = driver.find_element(By.ID, "frmBuscador:btnBuscar") # ID comun del SEACE
-        btn_buscar.click()
-        print("Buscando...")
-        time.sleep(5)
+        # 2. ESPERA INTELIGENTE (Hasta 20 segundos para que aparezca el botón)
+        wait = WebDriverWait(driver, 20)
         
-        # 3. EXTRAER RESULTADOS (Solo el primero para prueba)
-        # Buscamos filas de la tabla
-        filas = driver.find_elements(By.XPATH, "//tr[@data-ri]") 
+        # Intentamos buscar el botón por ID, si falla, probamos otro método
+        try:
+            print("Buscando botón 'Buscar'...")
+            btn_buscar = wait.until(EC.element_to_be_clickable((By.ID, "frmBuscador:btnBuscar")))
+            btn_buscar.click()
+            print("¡Clic en Buscar exitoso!")
+        except:
+            print("No encontré el botón por ID. Intentando por texto...")
+            # Plan B: Buscar cualquier botón que diga "Buscar"
+            btn_buscar = driver.find_element(By.XPATH, "//button[contains(text(),'Buscar')]")
+            btn_buscar.click()
+        
+        # Esperamos resultados
+        time.sleep(10)
+        
+        # 3. EXTRAER RESULTADOS
+        # Buscamos la tabla de resultados
+        filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]") 
         
         if not filas:
-            print("No se encontraron filas.")
+            print("La tabla de resultados está vacía o no cargó.")
+            # Si falla, tomamos una 'foto' del código fuente para ver qué pasó
+            print("Contenido parcial de la web:", driver.page_source[:500])
             return
 
-        # Procesamos solo la primera fila como ejemplo de demostración
+        print(f"¡Encontré {len(filas)} procesos!")
+        
+        # PROCESAMOS EL PRIMERO
         fila = filas[0]
         texto_fila = fila.text
-        print(f"Encontrado: {texto_fila[:50]}...")
+        print(f"Proceso detectado: {texto_fila[:50]}...")
         
-        # INTENTAR BAJAR PDF (Simulado para estabilidad inicial)
-        # En una versión avanzada, aquí haremos clic en el icono del PDF
-        # Por ahora, creamos un PDF dummy para probar que el sistema funciona
-        with open("bases_temp.pdf", "w") as f:
-            f.write("Este es un archivo de prueba del robot SEACE.")
+        # Crear PDF falso de prueba (ya que Selenium Headless a veces complica descargas reales sin config extra)
+        with open("bases_prueba.pdf", "w") as f:
+            f.write("PDF de prueba generado por el Robot SEACE.")
             
-        link_telegram = enviar_telegram("bases_temp.pdf", "Prueba_Bases.pdf")
-        analisis = "Prueba de sistema operativo."
+        link_telegram = enviar_telegram("bases_prueba.pdf", "Reporte_SEACE.pdf")
         
         # 4. MANDAR A GOOGLE SHEETS
         payload = {
-            "desc": texto_fila[:100], # Cortamos para que quepa
-            "entidad": "Entidad Detectada",
+            "desc": texto_fila[:150], 
+            "entidad": "SEACE AUTOMÁTICO",
             "pdf": link_telegram,
-            "analisis": analisis
+            "analisis": f"Título página: {driver.title}"
         }
-        requests.post(WEBHOOK_URL, json=payload)
-        print("¡Datos enviados a Google Sheet!")
+        
+        response = requests.post(WEBHOOK_URL, json=payload)
+        print(f"Respuesta del Excel: {response.text}")
 
     except Exception as e:
-        print(f"Ocurrió un error: {e}")
+        print(f"❌ ERROR CRÍTICO: {e}")
     finally:
         driver.quit()
 
