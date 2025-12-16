@@ -71,6 +71,7 @@ def analizar_con_ia_gemini(ruta_archivo):
     texto_completo = ""
     es_imagen = False
     
+    # 1. Extracción de Texto Base
     if ext in ['doc', 'docx']:
         texto_completo = extraer_texto_word(ruta_archivo)
     elif ext == 'pdf':
@@ -80,80 +81,92 @@ def analizar_con_ia_gemini(ruta_archivo):
                     t = p.extract_text()
                     if t: texto_completo += t + "\n"
         except: pass
-        if len(texto_completo) < 100: es_imagen = True
+        
+        # UMBRAL MÁS ALTO: Si hay menos de 500 letras, seguro es escaneado -> Usar Visión
+        if len(texto_completo) < 500: 
+            print("      👁️ Texto insuficiente. Activando Modo Visión...")
+            es_imagen = True
     
-    modelos = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro']
+    # 2. Configuración del Modelo
+    # Usamos SOLO Flash, es el mejor. Eliminamos 'gemini-pro' para evitar error 404.
+    modelo_nombre = 'gemini-1.5-flash'
     
     prompt = """
-    Rol: Ingeniero de Licitaciones.
-    Tarea: Extraer Personal Clave del TDR.
-    Formato:
+    Actúa como Experto en Licitaciones del Estado Peruano.
+    Analiza el siguiente documento (Bases/TDR).
+    
+    Tu objetivo es extraer:
+    1. CARGO del personal clave requerido.
+    2. PROFESIÓN solicitada.
+    3. EXPERIENCIA (Tiempo y detalle).
+    
+    Formato de respuesta (lista simple):
     👷 **[CARGO]**: [Profesión]
     🕒 [Experiencia]
-    Si no hay, resume el OBJETO.
+    🎓 [Otros requisitos]
+    
+    Si no encuentras personal clave explícito, resume en 2 líneas el OBJETO DEL SERVICIO.
     """
     
-    for nombre_modelo in modelos:
-        try:
-            model = genai.GenerativeModel(nombre_modelo)
-            if es_imagen and ext == 'pdf':
-                try:
-                    imgs = convert_from_path(ruta_archivo, first_page=1, last_page=5)
-                    response = model.generate_content([prompt] + imgs)
-                    return response.text.strip()
-                except: pass
-            else:
-                if len(texto_completo) < 20: return "Archivo vacío"
-                response = model.generate_content(f"{prompt}\n\nDOC:\n{texto_completo[:30000]}")
-                return response.text.strip()
-        except: continue
-    return "Error IA"
+    try:
+        model = genai.GenerativeModel(modelo_nombre)
+        response = None
+        
+        if es_imagen and ext == 'pdf':
+            # Modo Visión: Enviamos imágenes
+            try:
+                # Convertimos primeras 6 páginas a imágenes
+                imgs = convert_from_path(ruta_archivo, first_page=1, last_page=6)
+                response = model.generate_content([prompt] + imgs)
+            except Exception as e:
+                return f"Error procesando imágenes: {str(e)[:50]}"
+        else:
+            # Modo Texto
+            if len(texto_completo) < 50: return "Documento vacío o ilegible (Word/PDF sin texto)."
+            response = model.generate_content(f"{prompt}\n\nCONTENIDO:\n{texto_completo[:30000]}")
+        
+        # Verificamos respuesta
+        if response and response.text:
+            return response.text.strip()
+        else:
+            # Si la IA responde pero bloquea el texto (Safety Filters)
+            return f"IA bloqueó la respuesta (Seguridad/Filtro). Razón: {response.prompt_feedback}"
+
+    except Exception as e:
+        error_msg = str(e)
+        if "404" in error_msg: return "Error Modelo no encontrado (404)"
+        if "429" in error_msg: return "Error Cuota Excedida (429)"
+        return f"Error IA: {error_msg[:100]}"
 
 def restaurar_ubicacion(driver):
-    """
-    Función GPS: Se asegura de que estemos en la pestaña correcta
-    y con el año correcto antes de intentar nada.
-    """
     try:
-        # 1. ¿Estamos en la pestaña correcta?
-        # Buscamos la pestaña que dice "Buscador de Procedimientos"
         try:
             pestana = driver.find_element(By.PARTIAL_LINK_TEXT, "Buscador de Procedimientos")
-            # Si no tiene la clase 'active' o similar (difícil de saber), le damos clic por si acaso
             pestana.click()
             time.sleep(3)
         except:
-            # Plan B: ID directo (suele ser idTabBuscador)
             driver.execute_script("try{document.getElementById('frmBuscador:idTabBuscador_lbl').click();}catch(e){}")
             time.sleep(3)
 
-        # 2. ¿Está el año 2025 seleccionado?
         driver.execute_script("var s = document.getElementsByTagName('select'); for(var i=0; i<s.length; i++){ s[i].style.display = 'block'; }")
         selects = driver.find_elements(By.TAG_NAME, "select")
-        anio_ok = False
         for s in selects:
             if "2025" in obtener_texto_seguro(s):
                 val = driver.execute_script("return arguments[0].value", s)
                 if val != "2025":
                     driver.execute_script("arguments[0].value = '2025'; arguments[0].dispatchEvent(new Event('change'));", s)
                     time.sleep(3)
-                anio_ok = True
                 break
         
-        # 3. Darle a Buscar para refrescar la tabla
         print("      🔄 Refrescando búsqueda...")
         try: driver.execute_script("document.getElementById('tbBuscador:idFormBuscarProceso:btnBuscarSel').click();")
         except: driver.execute_script("document.querySelector('.btnBuscar_buscadorProcesos').click();")
-        
-        # 4. Esperar tabla
         WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
         return True
-    except Exception as e:
-        print(f"⚠️ Fallo al restaurar ubicación: {e}")
-        return False
+    except: return False
 
 def main():
-    print("Iniciando Robot 44.0 (GPS INTEGRADO)...")
+    print("Iniciando Robot 45.0 (CEREBRO IA MEJORADO)...")
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
@@ -165,15 +178,11 @@ def main():
     driver.set_window_size(1920, 1080)
     
     try:
-        # Inicio normal
         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
         time.sleep(5)
-        
-        # Primera configuración forzada
         restaurar_ubicacion(driver)
         
         pag = 1
-        
         while True:
             print(f"--- ⛏️ PÁGINA {pag} ---")
             filas_iniciales = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
@@ -183,13 +192,8 @@ def main():
 
             for i in range(num_filas):
                 try:
-                    # --- AQUÍ ESTÁ LA MAGIA: REVISIÓN DE GPS ANTES DE CADA FILA ---
-                    # Si no es la primera fila, nos aseguramos de estar en el sitio correcto
-                    # porque el "Regresar" nos pudo haber mandado a cualquier lado.
-                    if i > 0:
-                        restaurar_ubicacion(driver)
+                    if i > 0: restaurar_ubicacion(driver)
                     
-                    # Re-capturar elementos
                     filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
                     if i >= len(filas): break
                     row = filas[i]
@@ -211,12 +215,9 @@ def main():
                         if l.is_displayed(): snip=driver.execute_script("return arguments[0].textContent", l)
                     except: pass
                     
-                    # BOTONES DE ACCIÓN (Lógica visual corregida)
                     celda_acciones = cols[-1]
                     botones = celda_acciones.find_elements(By.TAG_NAME, "a")
                     btn_ficha = None
-                    
-                    # Buscamos el segundo botón (índice 1) si existe, sino el primero
                     if len(botones) >= 2: btn_ficha = botones[1]
                     elif len(botones) == 1: btn_ficha = botones[0]
                     
@@ -234,8 +235,7 @@ def main():
                             WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID,"tbFicha:dtDocumentos_data")))
                             
                             filas_docs = driver.find_elements(By.CSS_SELECTOR, "#tbFicha\\:dtDocumentos_data tr")
-                            mejor_link = None
-                            mejor_prio = 0
+                            mejor_link = None; mejor_prio = 0
                             
                             for fd in filas_docs:
                                 try:
@@ -243,16 +243,12 @@ def main():
                                     if not enlaces: continue
                                     lnk = enlaces[0]
                                     txt = obtener_texto_seguro(fd).upper()
-                                    
                                     prio = 0
                                     if "BASES" in txt: prio = 4
                                     elif "TDR" in txt: prio = 3
                                     elif fd.find_elements(By.CSS_SELECTOR, "img[src*='pdf']"): prio = 2
                                     elif fd.find_elements(By.CSS_SELECTOR, "img[src*='word']"): prio = 1
-                                    
-                                    if prio >= mejor_prio:
-                                        mejor_prio = prio
-                                        mejor_link = lnk
+                                    if prio >= mejor_prio: mejor_prio = prio; mejor_link = lnk
                                 except: pass
                             
                             if mejor_link:
@@ -279,19 +275,14 @@ def main():
                         payload = {"fecha_real": fecha, "desc": f"{nom}\n{desc}", "entidad": entidad, "pdf": pdf_st, "analisis": rep, "snip": snip, "cui": cui}
                         requests.post(WEBHOOK_URL, json=payload)
                         
-                        # --- RETROCESO ---
                         try: 
                             b = driver.find_element(By.XPATH, "//button[contains(text(),'Regresar')]")
                             forzar_click(driver, b)
                         except: driver.execute_script("window.history.back();")
                         
-                        # AL VOLVER, EL CICLO INICIA DE NUEVO Y 'RESTAURAR_UBICACION' SE ENCARGARÁ DEL RESTO
-                    
                     else: print("⚠️ Sin botón ficha")
                     
                 except Exception as e: 
-                    print(f"⚠️ Error fila: {e}")
-                    # Si falla, intentamos restaurar para el siguiente
                     restaurar_ubicacion(driver)
                     continue
 
