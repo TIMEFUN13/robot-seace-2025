@@ -1,0 +1,27 @@
+name: Robot SEACE
+
+on:
+  schedule:
+    - cron: '0 13 * * *' # Corre todos los días a las 8:00 AM Perú (13:00 UTC)
+  workflow_dispatch: # Permite botón manual
+
+jobs:
+  run-robot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Instalar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: Instalar Librerías
+        run: pip install -r requirements.txt
+        
+      - name: Ejecutar Scraper
+        env:
+          GOOGLE_WEBHOOK: ${{ secrets.GOOGLE_WEBHOOK }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scraper.py
