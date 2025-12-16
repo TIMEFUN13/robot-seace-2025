@@ -43,12 +43,24 @@ def es_fecha_hoy(fecha_texto):
         return fecha_texto[:10] == hoy
     except: return True
 
+def limpiar_texto_snip(texto_sucio):
+    # Limpia el texto "Codigos SNIP | | 24000..." para dejar solo el numero
+    try:
+        if "Sin información" in texto_sucio: return "-"
+        import re
+        # Busca grupos de 6 o 7 digitos
+        numeros = re.findall(r'\d{6,8}', texto_sucio)
+        if numeros: return " / ".join(numeros)
+        return texto_sucio[:20]
+    except: return texto_sucio
+
 def analizar_con_ia_gemini(ruta_pdf):
     print("      🧠 Consultando a Gemini...")
     texto_completo = ""
     try:
         with pdfplumber.open(ruta_pdf) as pdf:
-            for p in pdf.pages[:15]:
+            # Leemos primeras 10 paginas (suele estar ahi el perfil)
+            for p in pdf.pages[:10]:
                 t = p.extract_text()
                 if t: texto_completo += t + "\n"
     except Exception as e: return f"Error lectura PDF: {e}"
@@ -58,14 +70,19 @@ def analizar_con_ia_gemini(ruta_pdf):
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"""
-        Actúa como Ingeniero de Licitaciones. Analiza este TDR del SEACE:
+        Eres un Ingeniero de Licitaciones. Analiza este texto técnico (TDR) extraído del SEACE.
         
-        {texto_completo[:30000]}
+        {texto_completo[:25000]}
         
-        Extrae SOLO los Requisitos del Personal Clave. Responde en este formato:
-        - [CARGO]: [Profesión]
-        - [EXPERIENCIA]: [Tiempo y tipo de obras]
-        - [OTRO]: [Maestrías/Diplomados si piden]
+        Tu tarea es extraer los REQUISITOS DEL PERSONAL CLAVE.
+        Si no hay personal clave explícito, resume el OBJETO DEL SERVICIO.
+
+        Responde EXACTAMENTE con este formato limpio:
+        
+        👷 **[CARGO 1]**: [Profesión]
+        🕒 [Experiencia requerida]
+        
+        👷 **[CARGO 2]**: [Profesión]...
         """
         response = model.generate_content(prompt)
         return response.text.strip()
@@ -85,8 +102,9 @@ def extraer_dato_popup(driver, boton_lupa, tipo):
                     forzar_click(driver, c)
                 except: webdriver.ActionChains(driver).send_keys(u'\ue00c').perform()
                 break
+        
         limpio = texto.replace("Código SNIP", "").replace("Código Unico de Inversion", "").replace("Cerrar", "").strip()
-        return limpio[:50] if len(limpio)>1 else "Sin Dato"
+        return limpiar_texto_snip(limpio)
     except: return "Error"
 
 def recuperar_pagina(driver, pagina_objetivo):
@@ -106,14 +124,14 @@ def recuperar_pagina(driver, pagina_objetivo):
     return False
 
 def main():
-    print("Iniciando Robot 28.0 (ANTI-BLOQUEOS)...")
+    print("Iniciando Robot 29.0 (DEPREDADOR DE ARCHIVOS)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
+    # Preferencias para descarga automatica
     prefs = {"download.default_directory": DOWNLOAD_DIR, "download.prompt_for_download": False, "plugins.always_open_pdf_externally": True}
     chrome_options.add_experimental_option("prefs", prefs)
     
@@ -121,49 +139,28 @@ def main():
     driver.set_window_size(1920, 1080)
     
     try:
+        # 1. NAVEGACIÓN Y AÑO (Mejorado)
         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
         time.sleep(8)
         
-        # 1. PESTAÑA (Click JS agresivo)
-        print("Abriendo buscador...")
-        try:
-            driver.execute_script("document.getElementById('frmBuscador:idTabBuscador_lbl').click();")
-        except:
-            t = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Buscador de Procedimientos")))
-            forzar_click(driver, t)
-        time.sleep(5)
+        try: driver.execute_script("document.getElementById('frmBuscador:idTabBuscador_lbl').click();")
+        except: pass
+        time.sleep(3)
 
-        # 2. AÑO 2025 (SOLUCIÓN AL CRASH "NOT INTERACTABLE")
-        print("Seleccionando año 2025...")
-        # Hacemos visibles los selects ocultos
+        print("Seteando 2025...")
         driver.execute_script("var s = document.getElementsByTagName('select'); for(var i=0; i<s.length; i++){ s[i].style.display = 'block'; }")
-        
-        found_year = False
         selects = driver.find_elements(By.TAG_NAME, "select")
         for s in selects:
-            # Buscamos el select que contiene el año 2025
             if "2025" in s.get_attribute("textContent"):
-                # INTENTO 1: JS Directo (Más seguro)
                 driver.execute_script("arguments[0].value = '2025'; arguments[0].dispatchEvent(new Event('change'));", s)
-                found_year = True
                 break
-        
-        if not found_year:
-            print("⚠️ Advertencia: No encontré el selector de año, usando el por defecto.")
-        
         time.sleep(5)
 
-        # 3. BOTÓN BUSCAR
         print("Buscando...")
-        try:
-            btn = driver.find_element(By.ID, "tbBuscador:idFormBuscarProceso:btnBuscarSel")
-            forzar_click(driver, btn)
-        except:
-            driver.execute_script("document.querySelector('.btnBuscar_buscadorProcesos').click();")
-        
-        time.sleep(20)
+        try: driver.find_element(By.ID, "tbBuscador:idFormBuscarProceso:btnBuscarSel").click()
+        except: driver.execute_script("document.querySelector('.btnBuscar_buscadorProcesos').click();")
+        time.sleep(15)
 
-        # 4. BUCLE MINERO
         pag = 1
         total = 0
         
@@ -173,10 +170,10 @@ def main():
             except: break
 
             filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
-            n = len(filas)
             
-            for i in range(n):
+            for i in range(len(filas)):
                 try:
+                    # Refrescar filas
                     filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
                     if i >= len(filas): break
                     row = filas[i]
@@ -191,7 +188,7 @@ def main():
                     if MODO_SOLO_HOY and not es_fecha_hoy(fecha): continue
 
                     # SNIP/CUI
-                    snip=""; cui=""
+                    snip="-"; cui="-"
                     try:
                         l=row.find_element(By.CSS_SELECTOR, "[id$=':graCodSnip']")
                         if l.is_displayed(): snip=extraer_dato_popup(driver,l,"SNIP")
@@ -201,45 +198,73 @@ def main():
                         if l.is_displayed(): cui=extraer_dato_popup(driver,l,"CUI")
                     except: pass
                     
-                    # FICHA
+                    # ENTRAR A FICHA
                     try:
                         btn_ficha = row.find_element(By.CSS_SELECTOR, "[id$=':grafichaSel']")
                         forzar_click(driver, btn_ficha)
-                        time.sleep(6)
+                        time.sleep(5)
                         
-                        pdf_st = "No PDF"
-                        analisis = "Pendiente"
+                        pdf_st = "Sin Archivo"
+                        analisis = "Sin PDF para analizar" # Texto por defecto si falla descarga
                         
-                        # PDF y IA
+                        # --- ESTRATEGIA DE DESCARGA AGRESIVA ---
                         try:
+                            # Borrar anteriores
                             for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")): os.remove(f)
+                            
                             WebDriverWait(driver,5).until(EC.presence_of_element_located((By.ID,"tbFicha:dtDocumentos_data")))
                             docs = driver.find_elements(By.CSS_SELECTOR, "#tbFicha\\:dtDocumentos_data tr")
                             
+                            target_link = None
+                            
+                            # Ronda 1: Buscar "Bases" o "TDR"
                             for d in docs:
                                 try:
                                     lnk = d.find_element(By.TAG_NAME, "a")
-                                    name = lnk.text
-                                    if "Bases" in name or ".pdf" in name:
-                                        print(f"⬇️ {name}...")
-                                        forzar_click(driver, lnk)
-                                        f_path = None
-                                        for _ in range(15):
-                                            time.sleep(1)
-                                            fs = glob.glob(os.path.join(DOWNLOAD_DIR, "*"))
-                                            if fs and not fs[0].endswith('.crdownload'):
-                                                f_path = fs[0]; break
-                                        
-                                        if f_path:
-                                            enviar_telegram_archivo(f_path, f"📄 {name}\n{nom}")
-                                            pdf_st = "En Telegram ✅"
-                                            analisis = analizar_con_ia_gemini(f_path)
-                                            print(f"🧠 IA: {analisis[:40]}...")
-                                            break
+                                    txt = lnk.text.upper()
+                                    if "BASES" in txt or "TERMINOS" in txt or "RESUMEN" in txt:
+                                        target_link = lnk
+                                        print(f"🎯 Encontrado prioritario: {txt}")
+                                        break
                                 except: pass
+                            
+                            # Ronda 2: Si no hay prioritario, agarrar CUALQUIER PDF
+                            if not target_link:
+                                for d in docs:
+                                    try:
+                                        lnk = d.find_element(By.TAG_NAME, "a")
+                                        href = lnk.get_attribute("href")
+                                        if href and "pdf" in href: # Es un archivo?
+                                            target_link = lnk
+                                            print(f"⚠️ Usando archivo alternativo: {lnk.text}")
+                                            break
+                                    except: pass
+
+                            # DESCARGAR
+                            if target_link:
+                                forzar_click(driver, target_link)
+                                # Esperar descarga
+                                f_path = None
+                                for _ in range(15):
+                                    time.sleep(1)
+                                    fs = glob.glob(os.path.join(DOWNLOAD_DIR, "*"))
+                                    if fs and not fs[0].endswith('.crdownload'):
+                                        f_path = fs[0]; break
+                                
+                                if f_path:
+                                    # ENVIAR TELEGRAM
+                                    if enviar_telegram_archivo(f_path, f"📄 {nom}"):
+                                        pdf_st = "En Telegram ✅"
+                                    
+                                    # ANALIZAR CON IA
+                                    analisis = analizar_con_ia_gemini(f_path)
+                                    print(f"🧠 IA Responde: {analisis[:30]}...")
+                                else:
+                                    print("❌ Descarga falló (Timeout)")
+
                         except Exception as e: print(f"ErrDocs: {e}")
 
-                        # Cronograma
+                        # CRONOGRAMA
                         crono = ""
                         try:
                             t = driver.find_element(By.ID, "tbFicha:dtCronograma_data")
@@ -250,6 +275,7 @@ def main():
                                     if len(cc)>=2: crono += f"📅 {cc[0].text}: {cc[1].text}\n"
                         except: pass
 
+                        # RESUMEN FINAL
                         rep = f"OBJETO: {obj}\n\n{crono}\n--- 🧠 ANÁLISIS IA ---\n{analisis}"
                         
                         payload = {
@@ -259,6 +285,7 @@ def main():
                         requests.post(WEBHOOK_URL, json=payload)
                         total += 1
                         
+                        # SALIR
                         try: 
                             b = driver.find_element(By.XPATH, "//button[contains(text(),'Regresar')]")
                             forzar_click(driver, b)
@@ -267,7 +294,8 @@ def main():
                         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
                         recuperar_pagina(driver, pag)
                     
-                    except: 
+                    except Exception as e:
+                        print(f"Error fila: {e}")
                         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
                         time.sleep(5)
                         continue
