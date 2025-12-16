@@ -24,19 +24,20 @@ def forzar_click(driver, elemento):
     driver.execute_script("arguments[0].click();", elemento)
 
 def main():
-    print("Iniciando Robot 12.0 (Corrector de Paginación y Columnas)...")
+    print("Iniciando Robot 13.0 (Corrección Final)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    # User Agent estándar
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(options=chrome_options)
     driver.set_window_size(1920, 1080)
     
     try:
-        # 1. NAVEGACIÓN (Rutina estándar)
+        # 1. NAVEGACIÓN
         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
         time.sleep(8)
         
@@ -46,10 +47,11 @@ def main():
             forzar_click(driver, pestana)
             time.sleep(5)
         except:
+            print("⚠️ No pude cambiar pestaña por texto, intentando ID...")
             driver.execute_script("document.getElementById('frmBuscador:idTabBuscador_lbl').click();")
             time.sleep(5)
 
-        # Seleccionar Año 2025
+        # Año 2025
         driver.execute_script("var s = document.getElementsByTagName('select'); for(var i=0; i<s.length; i++){ s[i].style.display = 'block'; }")
         selects = driver.find_elements(By.TAG_NAME, "select")
         for s in selects:
@@ -62,6 +64,7 @@ def main():
         time.sleep(5)
 
         # Buscar
+        print("Buscando...")
         id_btn = "tbBuscador:idFormBuscarProceso:btnBuscarSel"
         try:
             btn = driver.find_element(By.ID, id_btn)
@@ -73,36 +76,44 @@ def main():
         print("Esperando tabla (20s)...")
         time.sleep(20)
 
-        # 2. LECTURA DE PAGINACIÓN MEJORADA
+        # 2. LECTURA DE PAGINACIÓN (LOOP DE ESPERA)
         total_paginas = 1
-        try:
-            # En lugar de buscar una clase específica, leemos TODO el pie de página
-            footer_paginador = driver.find_element(By.CSS_SELECTOR, ".ui-paginator-bottom")
-            texto_footer = footer_paginador.text # Ejemplo: "Mostrando 1 a 15... Página: 1/34"
-            print(f"Texto del pie de página detectado: '{texto_footer}'")
-            
-            # Buscamos cualquier patrón que sea "numero / numero"
-            match = re.search(r'Página:\s*\d+\s*/\s*(\d+)', texto_footer)
-            if match:
-                total_paginas = int(match.group(1))
-                print(f"✅ ¡EUREKA! Total de páginas detectadas: {total_paginas}")
-            else:
-                # Intento secundario más simple (buscar el último número después de un slash)
-                match_simple = re.search(r'/\s*(\d+)', texto_footer)
-                if match_simple:
-                    total_paginas = int(match_simple.group(1))
-                    print(f"✅ Límite detectado (Método 2): {total_paginas}")
-        except Exception as e:
-            print(f"⚠️ Error leyendo paginación: {e}. Asumiendo 1 página.")
+        intentos = 0
+        texto_footer = ""
+        
+        print("Leyendo número de páginas...")
+        while intentos < 5:
+            try:
+                # Usamos textContent para leer texto aunque esté medio oculto
+                footer = driver.find_element(By.CSS_SELECTOR, ".ui-paginator-bottom")
+                texto_footer = footer.get_attribute("textContent")
+                
+                if texto_footer and "Página" in texto_footer:
+                    print(f"Texto encontrado: '{texto_footer}'")
+                    break
+                else:
+                    print("Texto vacío, esperando...")
+                    time.sleep(2)
+                    intentos += 1
+            except:
+                time.sleep(2)
+                intentos += 1
 
-        # --- BUCLE DE PAGINACIÓN ---
+        # Extraer número
+        match = re.search(r'/\s*(\d+)', texto_footer)
+        if match:
+            total_paginas = int(match.group(1))
+            print(f"✅ TOTAL PÁGINAS REAL: {total_paginas}")
+        else:
+            print(f"⚠️ No pude leer el número final. Texto visto: '{texto_footer}'. Asumo 1 página.")
+
+        # --- BUCLE ---
         pagina_actual = 1
         procesos_totales = 0
         
         while pagina_actual <= total_paginas:
-            print(f"--- LEYENDO PÁGINA {pagina_actual}/{total_paginas} ---")
+            print(f"--- PÁGINA {pagina_actual}/{total_paginas} ---")
             
-            # Esperar tabla
             WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
             filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
             
@@ -113,56 +124,47 @@ def main():
                 try:
                     celdas = fila.find_elements(By.TAG_NAME, "td")
                     if len(celdas) > 6:
-                        # MAPPING CORRECTO DE COLUMNAS
-                        # Col 0: Indice
-                        entidad = celdas[1].text  # Col 1: Entidad
-                        fecha_pub = celdas[2].text # Col 2: Fecha Publicación
-                        nomenclatura = celdas[3].text # Col 3: Nomenclatura
-                        # Col 4 suele ser vacía o reinicio
-                        objeto = celdas[5].text   # Col 5: Objeto (Bien, Servicio...)
-                        descripcion = celdas[6].text # Col 6: Descripción
+                        entidad = celdas[1].text
+                        fecha_pub = celdas[2].text
+                        nomenclatura = celdas[3].text
+                        objeto = celdas[5].text
+                        descripcion = celdas[6].text
                         
-                        # Limpieza de datos para el Sheet
                         datos_lote.append({
-                            "desc": f"{nomenclatura}\n{descripcion}", # Descripción completa
-                            "entidad": entidad, # Entidad limpia
-                            "pdf": "Ver Detalle", # Aún no podemos sacar link sin entrar
-                            # AQUÍ CORREGIMOS EL ERROR DE FECHAS MEZCLADAS
-                            # Mandamos 'fecha_pub' a la columna que tu script de Apps Script pone en la Columna A (Fecha)
-                            # Pero ojo: Tu Apps Script pone `new Date()` en la Col A.
-                            # Vamos a mandar la fecha real en el campo 'analisis' o 'pdf' para que la veas.
-                            "analisis": objeto # Solo el tipo de objeto, sin fecha sucia
+                            "desc": f"{nomenclatura}\n{descripcion}",
+                            "entidad": entidad,
+                            "pdf": "Ver Link",
+                            "analisis": objeto, 
+                            "fecha_real": fecha_pub # CLAVE PARA TU EXCEL
                         })
-                        
-                        # TRUCO: Para que la fecha del SEACE salga en tu Excel, 
-                        # vamos a modificar el Apps Script después. Por ahora, el robot enviará:
-                        # Descripcion, Entidad, Link (Texto), Analisis (Objeto)
                 except: continue
 
-            # Enviar a Sheets
+            # ENVIAR Y VERIFICAR RESPUESTA
+            print(f"Enviando {len(datos_lote)} datos a Google...")
             for dato in datos_lote:
-                # Añadimos la fecha real del SEACE al JSON para que podamos usarla
-                dato['fecha_real'] = fecha_pub 
-                requests.post(WEBHOOK_URL, json=dato)
-                procesos_totales += 1
+                r = requests.post(WEBHOOK_URL, json=dato)
+                # Esto imprimirá si Google aceptó el dato o dio error
+                if r.status_code != 200:
+                    print(f"❌ ERROR WEBHOOK: Código {r.status_code}. Revisa tu URL en GitHub Secrets.")
+                    break
             
-            print(f"Enviados {len(datos_lote)}. Total: {procesos_totales}")
+            procesos_totales += len(datos_lote)
+            print(f"Acumulado: {procesos_totales}")
 
-            # Siguiente página
             if pagina_actual < total_paginas:
                 try:
                     next_btn = driver.find_element(By.CSS_SELECTOR, ".ui-paginator-next")
                     if "ui-state-disabled" in next_btn.get_attribute("class"): break
                     forzar_click(driver, next_btn)
-                    time.sleep(10) # Tiempo para cargar
+                    time.sleep(8)
                     pagina_actual += 1
                 except: break
             else: break
 
-        enviar_telegram_simple(f"✅ Robot terminó. {procesos_totales} procesos de {total_paginas} páginas.")
+        enviar_telegram_simple(f"✅ Fin. {procesos_totales} procesos extraídos.")
 
     except Exception as e:
-        print(f"❌ ERROR: {e}")
+        print(f"❌ CRASH: {e}")
     finally:
         driver.quit()
 
