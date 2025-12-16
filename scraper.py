@@ -95,8 +95,6 @@ def analizar_con_ia_gemini(ruta_archivo):
             print("      👁️ Modo Visión (OCR)...")
             es_imagen = True
     
-    # --- MODELOS ACTUALIZADOS (SIN EL ERROR 404) ---
-    # Usamos gemini-1.5-flash como principal, es el más rápido y estable hoy
     modelos = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro']
     
     prompt = """
@@ -113,33 +111,32 @@ def analizar_con_ia_gemini(ruta_archivo):
         try:
             model = genai.GenerativeModel(nombre_modelo)
             if es_imagen and ext == 'pdf':
-                imgs = convert_from_path(ruta_archivo, first_page=1, last_page=6)
-                response = model.generate_content([prompt] + imgs)
+                try:
+                    imgs = convert_from_path(ruta_archivo, first_page=1, last_page=6)
+                    response = model.generate_content([prompt] + imgs)
+                    return response.text.strip()
+                except: pass
             else:
                 if len(texto_completo) < 20: return "Archivo vacío"
                 response = model.generate_content(f"{prompt}\n\nDOC:\n{texto_completo[:30000]}")
-            
-            return response.text.strip()
-        except Exception:
-            continue 
+                return response.text.strip()
+        except Exception: continue 
             
     return "Error IA: No se pudo conectar."
 
 def recuperar_pagina(driver, pagina_objetivo):
     """
-    Función robusta: Si no encuentra la tabla, vuelve a BUSCAR.
+    Recuperación robusta: Si la tabla muere, la revive.
     """
     try:
-        # 1. ¿Estamos en la tabla?
         try:
-            WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
+            WebDriverWait(driver, 3).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
         except:
-            print("⚠️ Tabla perdida. Re-iniciando búsqueda...")
+            print("⚠️ Tabla perdida. Reactivando búsqueda...")
             try: driver.execute_script("document.getElementById('tbBuscador:idFormBuscarProceso:btnBuscarSel').click();")
             except: driver.execute_script("document.querySelector('.btnBuscar_buscadorProcesos').click();")
             WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
 
-        # 2. Paginación
         p = driver.find_element(By.ID, "tbBuscador:idFormBuscarProceso:dtProcesos_paginator_bottom")
         txt = obtener_texto_seguro(p.find_element(By.CSS_SELECTOR, ".ui-paginator-current"))
         import re
@@ -147,7 +144,7 @@ def recuperar_pagina(driver, pagina_objetivo):
         act = int(m.group(1)) if m else 1
         
         if act < pagina_objetivo:
-            print(f"🔄 Avanzando pág {act} -> {pagina_objetivo}")
+            print(f"🔄 Recuperando Pág {act} -> {pagina_objetivo}")
             nxt = p.find_element(By.CSS_SELECTOR, ".ui-paginator-next")
             for _ in range(pagina_objetivo - act):
                 forzar_click(driver, nxt)
@@ -157,7 +154,7 @@ def recuperar_pagina(driver, pagina_objetivo):
     return False
 
 def main():
-    print("Iniciando Robot 40.0 (NAVEGACIÓN BLINDADA)...")
+    print("Iniciando Robot 42.0 (BOTÓN CORRECTO - SEGUNDO ICONO)...")
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
@@ -193,19 +190,16 @@ def main():
         while True:
             print(f"--- ⛏️ PÁGINA {pag} ---")
             time.sleep(3)
-            
-            # Re-encontrar filas en cada vuelta del bucle principal
-            filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
-            if not filas: break
-            
-            num_filas_detectadas = len(filas)
-            print(f"Detectadas {num_filas_detectadas} filas.")
+            filas_iniciales = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
+            if not filas_iniciales: break
+            num_filas = len(filas_iniciales)
+            print(f"Filas detectadas: {num_filas}")
 
-            for i in range(num_filas_detectadas):
+            for i in range(num_filas):
                 try:
-                    # RE-ENCONTRAR TABLA (CLAVE PARA QUE NO FALLE EL SEGUNDO)
+                    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
                     filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
-                    if i >= len(filas): break # Seguridad
+                    if i >= len(filas): break
                     row = filas[i]
                     cols = row.find_elements(By.TAG_NAME, "td")
                     
@@ -217,8 +211,7 @@ def main():
                     desc = obtener_texto_seguro(cols[6])
                     
                     if MODO_SOLO_HOY and not es_fecha_hoy(fecha): continue
-                    
-                    print(f"👉 Procesando {i+1}/{num_filas_detectadas}: {nom[:20]}...")
+                    print(f"👉 {i+1}/{num_filas}: {nom[:20]}...")
 
                     snip="-"; cui="-"
                     try:
@@ -226,16 +219,31 @@ def main():
                         if l.is_displayed(): snip=driver.execute_script("return arguments[0].textContent", l)
                     except: pass
                     
+                    # --- CORRECCIÓN: CLIC EN EL SEGUNDO BOTÓN ---
                     try:
-                        btn_ficha = row.find_element(By.CSS_SELECTOR, "[id$=':grafichaSel']")
-                        forzar_click(driver, btn_ficha)
-                        time.sleep(6)
+                        celda_acciones = cols[-1]
+                        botones = celda_acciones.find_elements(By.TAG_NAME, "a")
+                        
+                        if len(botones) >= 2:
+                            # EL BOTÓN CORRECTO ES EL SEGUNDO (Índice 1)
+                            # El primero [0] es el reloj (historial)
+                            btn_ficha = botones[1] 
+                            forzar_click(driver, btn_ficha)
+                            time.sleep(6)
+                        elif len(botones) == 1:
+                            # Si solo hay uno, pues le damos a ese (mejor que nada)
+                            btn_ficha = botones[0]
+                            forzar_click(driver, btn_ficha)
+                            time.sleep(6)
+                        else:
+                            print("⚠️ No hay botones de acción.")
+                            continue 
                         
                         pdf_st = "Sin Archivo"
                         analisis = "Sin Doc"
                         
                         try:
-                            # LIMPIEZA
+                            # Limpieza
                             for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")): 
                                 try: os.remove(f)
                                 except: pass
@@ -283,7 +291,7 @@ def main():
                                     analisis = analizar_con_ia_gemini(f_path)
                                     print(f"   🧠 IA: {analisis[:30]}...")
                                 else: print("   ❌ Timeout descarga")
-                            else: print("   ⚠️ No hay docs descargables")
+                            else: print("   ⚠️ No hay docs válidos")
 
                         except Exception as e: print(f"   ErrDocs: {e}")
 
@@ -305,17 +313,16 @@ def main():
                         }
                         requests.post(WEBHOOK_URL, json=payload)
                         
-                        # --- RETROCESO SEGURO ---
                         try: 
                             b = driver.find_element(By.XPATH, "//button[contains(text(),'Regresar')]")
                             forzar_click(driver, b)
                         except: driver.execute_script("window.history.back();")
                         
-                        # VERIFICAR SI LA TABLA SOBREVIVIÓ
-                        recuperar_pagina(driver, pag)
+                        if not recuperar_pagina(driver, pag):
+                            print("⚠️ Falló recuperación, reintentando...")
                     
-                    except: 
-                        print("⚠️ Error crítico en fila, recuperando...")
+                    except Exception as e: 
+                        print(f"⚠️ Error fila: {e}")
                         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
                         time.sleep(5)
                         continue
