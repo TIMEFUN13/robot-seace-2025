@@ -27,12 +27,13 @@ def enviar_telegram(ruta_pdf, nombre_archivo):
         return "Error al subir"
 
 def main():
-    print("Iniciando Robot 4.0 (Selector de Año)...")
+    print("Iniciando Robot 5.0 (Modo 'Rayos X')...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    # User Agent es vital para que no nos detecten como robot
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36")
     
     driver = webdriver.Chrome(options=chrome_options)
@@ -42,80 +43,91 @@ def main():
         url_seace = "https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml"
         driver.get(url_seace)
         print("Entrando al SEACE...")
-        time.sleep(5) 
+        time.sleep(8) # Damos buen tiempo para cargar scripts
         
+        # TRUCO MAESTRO: Hacer visibles los selectores ocultos de PrimeFaces
+        print("Aplicando Rayos X para ver listas ocultas...")
+        driver.execute_script("var s = document.getElementsByTagName('select'); for(var i=0; i<s.length; i++){ s[i].style.display = 'block'; }")
+        time.sleep(1)
+
         # 1. SELECCIONAR AÑO 2025
-        # Buscamos todos los selectores (dropdowns)
         selects = driver.find_elements(By.TAG_NAME, "select")
-        anio_encontrado = False
+        anio_seleccionado = False
+        
+        print(f"Encontré {len(selects)} listas desplegables. Buscando el año...")
         
         for s in selects:
-            # Tratamos de encontrar el que tenga opciones de años
-            try:
-                texto_opciones = s.text
-                if "2025" in texto_opciones and "2024" in texto_opciones:
-                    print("¡Selector de Año encontrado!")
+            # Usamos 'textContent' porque 'text' a veces falla en elementos ocultos
+            texto_interno = s.get_attribute("textContent")
+            if "2025" in texto_interno and "2024" in texto_interno:
+                print("¡Lista de Años ENCONTRADA!")
+                
+                # Método 1: Selección directa Selenium
+                try:
                     selector = Select(s)
                     selector.select_by_visible_text("2025")
-                    print("Año 2025 seleccionado.")
-                    anio_encontrado = True
-                    break
-            except:
-                continue
-                
-        if not anio_encontrado:
-            print("⚠️ No encontré el selector de año, intentaré buscar directo.")
-
+                    print("Intento 1: Año seleccionado vía Selenium.")
+                    anio_seleccionado = True
+                except:
+                    print("Intento 1 falló. Probando fuerza bruta JavaScript...")
+                    
+                # Método 2: Fuerza bruta (Si el 1 falla o para asegurar)
+                if not anio_seleccionado:
+                    driver.execute_script("arguments[0].value = '2025'; arguments[0].dispatchEvent(new Event('change'));", s)
+                    print("Intento 2: Año forzado vía JavaScript.")
+                    anio_seleccionado = True
+                break
+        
+        if not anio_seleccionado:
+            print("⚠️ ALERTA: No pude seleccionar el año. La búsqueda podría fallar.")
+        
         time.sleep(2)
 
         # 2. CLICK EN BUSCAR
-        # Usamos una búsqueda por texto parcial que es infalible
-        print("Buscando botón...")
-        botones = driver.find_elements(By.TAG_NAME, "button")
-        btn_final = None
+        print("Buscando botón 'Buscar'...")
+        # Buscamos botones o inputs que digan "Buscar"
+        botones = driver.find_elements(By.XPATH, "//button[contains(text(),'Buscar')] | //input[contains(@value,'Buscar')]")
         
-        for b in botones:
-            if "Buscar" in b.text:
-                btn_final = b
-                break
-        
-        if btn_final:
-            driver.execute_script("arguments[0].click();", btn_final)
-            print("Clic en Buscar enviado. Esperando 15 segundos...")
-            time.sleep(15) # El SEACE es lento cargando la tabla
+        if botones:
+            print("Botón encontrado. Hiciendo clic...")
+            driver.execute_script("arguments[0].click();", botones[0])
+            print("Clic enviado. Esperando 15 segundos a que cargue la tabla...")
+            time.sleep(15) 
         else:
-            print("No encontré botón Buscar, probando método alternativo...")
-            # Intento desesperado: buscar por ID común
-            driver.execute_script("document.getElementById('frmBuscador:btnBuscar').click();")
-            time.sleep(15)
+            print("No encontré botón por texto. Probando ID 'frmBuscador:btnBuscar'...")
+            try:
+                btn = driver.find_element(By.ID, "frmBuscador:btnBuscar")
+                driver.execute_script("arguments[0].click();", btn)
+                time.sleep(15)
+            except:
+                print("❌ No pude dar clic en Buscar.")
 
         # 3. EXTRAER RESULTADOS
         filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]") 
         
         if not filas:
-            print("❌ La tabla sigue vacía. Imprimiendo HTML para depurar...")
-            # Esto imprimirá el código de la página en los logs para que yo pueda verlo
-            print(driver.page_source[:1000])
+            print("❌ La tabla sigue vacía.")
+            print("HTML parcial:", driver.page_source[:500])
             return
 
         print(f"✅ ¡ÉXITO TOTAL! Encontré {len(filas)} procesos.")
         
         # PROCESAMOS EL PRIMERO
         fila = filas[0]
-        texto_fila = fila.text
+        texto_fila = fila.text.replace("\n", " ") # Limpiamos saltos de linea
         print(f"Proceso: {texto_fila[:100]}...")
         
-        # SIMULACIÓN DE PDF (Para verificar flujo completo)
-        with open("bases_exito.pdf", "w") as f:
-            f.write("Este PDF confirma que el Robot 4.0 encontró la tabla.")
+        # SIMULACIÓN DE PDF
+        with open("reporte_seace.pdf", "w") as f:
+            f.write(f"Reporte generado. Proceso encontrado: {texto_fila}")
         
-        link = enviar_telegram("bases_exito.pdf", "Licitacion_Encontrada.pdf")
+        link = enviar_telegram("reporte_seace.pdf", "Alerta_SEACE.pdf")
         
         payload = {
-            "desc": texto_fila[:150], 
-            "entidad": "GOBIERNO PERUANO (SEACE)",
+            "desc": texto_fila, 
+            "entidad": "SEACE (GitHub)",
             "pdf": link,
-            "analisis": "Datos extraídos de tabla real"
+            "analisis": f"Procesos hoy: {len(filas)}"
         }
         requests.post(WEBHOOK_URL, json=payload)
         print("Datos enviados a Google Sheets.")
