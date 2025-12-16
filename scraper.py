@@ -1,12 +1,13 @@
 import os
 import time
 import glob
+import base64
+import json
 import datetime
 import requests
 import subprocess
 import pdfplumber
 import pypdf
-import google.generativeai as genai
 from docx import Document
 from pdf2image import convert_from_path
 from selenium import webdriver
@@ -21,9 +22,6 @@ TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
 CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 GEMINI_API_KEY = os.environ['GEMINI_API_KEY']
 MODO_SOLO_HOY = False 
-
-# Configuración IA
-genai.configure(api_key=GEMINI_API_KEY)
 
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
 if not os.path.exists(DOWNLOAD_DIR): os.makedirs(DOWNLOAD_DIR)
@@ -66,13 +64,66 @@ def extraer_texto_word(ruta_archivo):
     except: pass
     return texto
 
-def analizar_con_ia_gemini(ruta_archivo):
-    print("      🧠 Conectando a Gemini...")
+def analizar_con_ia_directo(texto_o_imagenes, es_imagen=False):
+    """
+    Conexión Directa (REST API) para evitar errores de librería.
+    """
+    print("      📡 Llamando a Google (Directo)...")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    headers = {'Content-Type': 'application/json'}
+    
+    prompt = """
+    Eres un Experto en Licitaciones. Extrae del documento:
+    1. CARGO del personal clave.
+    2. PROFESIÓN.
+    3. EXPERIENCIA.
+    
+    Responde SOLO con este formato:
+    👷 **[CARGO]**: [Profesión]
+    🕒 [Experiencia]
+    🎓 [Otros]
+    
+    Si no hay personal, resume el OBJETO en 1 linea.
+    """
+
+    payload = {"contents": []}
+    
+    if es_imagen:
+        # Si son imágenes (OCR), las enviamos en base64
+        parts = [{"text": prompt}]
+        for img_path in texto_o_imagenes: # Lista de rutas de imagenes temporales
+            with open(img_path, "rb") as image_file:
+                b64_data = base64.b64encode(image_file.read()).decode('utf-8')
+                parts.append({
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": b64_data
+                    }
+                })
+        payload["contents"].append({"parts": parts})
+    else:
+        # Si es texto normal
+        full_text = f"{prompt}\n\nDOCUMENTO:\n{texto_o_imagenes[:30000]}"
+        payload["contents"].append({"parts": [{"text": full_text}]})
+
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
+        if response.status_code == 200:
+            res_json = response.json()
+            try:
+                return res_json['candidates'][0]['content']['parts'][0]['text']
+            except:
+                return "IA respondió pero sin texto (Bloqueo de seguridad)."
+        else:
+            return f"Error API {response.status_code}: {response.text[:100]}"
+    except Exception as e:
+        return f"Error Conexión: {e}"
+
+def procesar_documento(ruta_archivo):
     ext = ruta_archivo.lower().split('.')[-1]
     texto_completo = ""
-    es_imagen = False
     
-    # 1. Extracción
+    # 1. Intentar extraer texto
     if ext in ['doc', 'docx']:
         texto_completo = extraer_texto_word(ruta_archivo)
     elif ext == 'pdf':
@@ -82,66 +133,36 @@ def analizar_con_ia_gemini(ruta_archivo):
                     t = p.extract_text()
                     if t: texto_completo += t + "\n"
         except: pass
-        
-        # Umbral 500 caracteres para decidir si es imagen
-        if len(texto_completo) < 500: 
-            print("      👁️ Texto escaso. Activando Modo Visión...")
-            es_imagen = True
     
-    # 2. Selección de Modelo (A PRUEBA DE 404)
-    # Lista de variantes para probar
-    modelos_a_probar = [
-        'gemini-1.5-flash',
-        'gemini-1.5-flash-latest',
-        'gemini-1.5-pro',
-        'gemini-1.0-pro',
-        'models/gemini-1.5-flash'
-    ]
-    
-    prompt = """
-    Actúa como Experto en Licitaciones.
-    Extrae del documento:
-    1. CARGO del personal clave.
-    2. PROFESIÓN.
-    3. EXPERIENCIA.
-    
-    Formato OBLIGATORIO:
-    👷 **[CARGO]**: [Profesión]
-    🕒 [Experiencia]
-    🎓 [Otros]
-    
-    Si no hay personal, resume el OBJETO.
-    """
-    
-    error_log = ""
-    
-    for modelo in modelos_a_probar:
+    # 2. Decidir estrategia (Texto vs Imagen)
+    # Si hay menos de 500 letras, asumimos que es ESCANEADO -> Modo Visión
+    if len(texto_completo) < 500 and ext == 'pdf':
+        print("      👁️ Texto insuficiente. Activando Modo Visión (OCR)...")
         try:
-            model = genai.GenerativeModel(modelo)
-            response = None
+            # Convertir a imágenes temporales
+            imagenes = convert_from_path(ruta_archivo, first_page=1, last_page=5)
+            rutas_imgs = []
+            for i, img in enumerate(imagenes):
+                tmp_path = os.path.join(DOWNLOAD_DIR, f"temp_page_{i}.jpg")
+                img.save(tmp_path, 'JPEG')
+                rutas_imgs.append(tmp_path)
             
-            if es_imagen and ext == 'pdf':
-                try:
-                    imgs = convert_from_path(ruta_archivo, first_page=1, last_page=6)
-                    response = model.generate_content([prompt] + imgs)
-                except Exception as e:
-                    print(f"      ❌ Error visión con {modelo}: {e}")
-                    continue
-            else:
-                if len(texto_completo) < 50: return "Archivo vacío."
-                response = model.generate_content(f"{prompt}\n\nDOC:\n{texto_completo[:30000]}")
+            # Enviar imágenes a la IA
+            resultado = analizar_con_ia_directo(rutas_imgs, es_imagen=True)
             
-            # Si llegamos aquí, funcionó
-            if response and response.text:
-                return response.text.strip()
-                
+            # Limpiar imágenes temp
+            for r in rutas_imgs: os.remove(r)
+            return resultado
+            
         except Exception as e:
-            # Si es 404, probamos el siguiente modelo calladitos
-            if "404" in str(e) or "not found" in str(e).lower():
-                continue
-            error_log = str(e)
-            
-    return f"Error IA: Ningún modelo respondió. Último error: {error_log[:50]}"
+            return f"Error OCR: {e}"
+    
+    elif len(texto_completo) < 50:
+        return "Archivo vacío o ilegible."
+    
+    else:
+        # Enviar texto a la IA
+        return analizar_con_ia_directo(texto_completo, es_imagen=False)
 
 def restaurar_ubicacion(driver):
     try:
@@ -171,9 +192,7 @@ def restaurar_ubicacion(driver):
     except: return False
 
 def main():
-    print(f"Iniciando Robot 46.0 (IA POLÍGLOTA)...")
-    print(f"Versión librería IA: {genai.__version__}") # DIAGNÓSTICO
-    
+    print("Iniciando Robot 47.0 (CONEXIÓN DIRECTA API)...")
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
@@ -222,7 +241,7 @@ def main():
                         if l.is_displayed(): snip=driver.execute_script("return arguments[0].textContent", l)
                     except: pass
                     
-                    # --- BOTÓN FICHA (SEGUNDO ICONO) ---
+                    # --- SELECCIÓN DEL BOTÓN (SEGUNDO ÍCONO) ---
                     celda_acciones = cols[-1]
                     botones = celda_acciones.find_elements(By.TAG_NAME, "a")
                     btn_ficha = None
@@ -271,9 +290,9 @@ def main():
                                 if f_path:
                                     enviar_telegram_archivo(f_path, f"📄 {nom}")
                                     pdf_st = "En Telegram ✅"
-                                    # LLAAMADA A LA IA BLINDADA
-                                    analisis = analizar_con_ia_gemini(f_path)
-                                    print(f"   🧠 IA: {analisis[:20]}...")
+                                    # --- AQUÍ LA MAGIA: PROCESAMIENTO ROBUSTO ---
+                                    analisis = procesar_documento(f_path)
+                                    print(f"   🧠 IA Responde: {analisis[:30]}...")
                                 else: print("   ❌ Timeout")
                             else: print("   ⚠️ Sin docs")
 
