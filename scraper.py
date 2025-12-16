@@ -1,13 +1,13 @@
 import os
 import time
 import glob
+import json
+import base64
 import datetime
 import requests
 import subprocess
 import pdfplumber
 import pypdf
-from google import genai # <--- NUEVA IMPORTACIÓN OFICIAL
-from google.genai import types
 from docx import Document
 from pdf2image import convert_from_path
 from selenium import webdriver
@@ -25,6 +25,9 @@ MODO_SOLO_HOY = False
 
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
 if not os.path.exists(DOWNLOAD_DIR): os.makedirs(DOWNLOAD_DIR)
+
+# VARIABLE GLOBAL PARA GUARDAR EL MODELO ENCONTRADO
+MODELO_ACTUAL = None
 
 def enviar_telegram_archivo(ruta_archivo, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
@@ -64,13 +67,100 @@ def extraer_texto_word(ruta_archivo):
     except: pass
     return texto
 
-def analizar_con_ia_gemini(ruta_archivo):
-    print("      🧠 Consultando a Gemini (SDK Oficial Nuevo)...")
+def obtener_modelo_dinamico():
+    """
+    Pregunta a Google qué modelos tiene disponibles la cuenta y elige el mejor.
+    """
+    global MODELO_ACTUAL
+    if MODELO_ACTUAL: return MODELO_ACTUAL # Si ya lo encontramos, lo reusamos
+
+    print("      🔍 Buscando nombre de modelo compatible...")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
+    
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            modelos = data.get('models', [])
+            
+            # 1. Buscamos uno que sea 'generateContent' y preferiblemente Flash
+            candidato = None
+            for m in modelos:
+                nombre = m['name'] # Ej: models/gemini-1.5-flash-001
+                metodos = m.get('supportedGenerationMethods', [])
+                
+                if 'generateContent' in metodos:
+                    if 'flash' in nombre.lower():
+                        MODELO_ACTUAL = nombre
+                        print(f"      ✅ Modelo FLASH detectado: {MODELO_ACTUAL}")
+                        return MODELO_ACTUAL
+                    elif 'pro' in nombre.lower() and not candidato:
+                        candidato = nombre
+            
+            # Si no hay flash, usamos el candidato (Pro)
+            if candidato:
+                MODELO_ACTUAL = candidato
+                print(f"      ✅ Modelo PRO detectado: {MODELO_ACTUAL}")
+                return MODELO_ACTUAL
+            
+            # Si no hay nada claro, fallback
+            MODELO_ACTUAL = "models/gemini-1.5-flash" 
+            return MODELO_ACTUAL
+        else:
+            print(f"      ⚠️ Error listando modelos: {response.status_code}")
+            return "models/gemini-1.5-flash"
+    except Exception as e:
+        print(f"      ⚠️ Error conexión inicial: {e}")
+        return "models/gemini-1.5-flash"
+
+def analizar_con_ia_directo(texto_o_imagenes, es_imagen=False):
+    # 1. Obtenemos el nombre correcto
+    nombre_modelo = obtener_modelo_dinamico()
+    
+    # 2. Preparamos la URL con ese nombre
+    # El nombre ya viene como 'models/gemini...', no hace falta agregarlo
+    if not nombre_modelo.startswith("models/"): nombre_modelo = f"models/{nombre_modelo}"
+    
+    print(f"      📡 Enviando a {nombre_modelo}...")
+    url = f"https://generativelanguage.googleapis.com/v1beta/{nombre_modelo}:generateContent?key={GEMINI_API_KEY}"
+    headers = {'Content-Type': 'application/json'}
+    
+    prompt = """
+    Rol: Experto en Licitaciones.
+    Extrae: CARGO, PROFESIÓN, EXPERIENCIA del personal clave.
+    Formato:
+    👷 **[CARGO]**: [Profesión]
+    🕒 [Experiencia]
+    🎓 [Otros]
+    Si no hay, resume el OBJETO.
+    """
+
+    payload = {"contents": []}
+    
+    if es_imagen:
+        parts = [{"text": prompt}]
+        for img_path in texto_o_imagenes:
+            with open(img_path, "rb") as image_file:
+                b64_data = base64.b64encode(image_file.read()).decode('utf-8')
+                parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64_data}})
+        payload["contents"].append({"parts": parts})
+    else:
+        full_text = f"{prompt}\n\nDOC:\n{texto_o_imagenes[:30000]}"
+        payload["contents"].append({"parts": [{"text": full_text}]})
+
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
+        if response.status_code == 200:
+            return response.json()['candidates'][0]['content']['parts'][0]['text']
+        else:
+            return f"Error API {response.status_code}: {response.text[:100]}"
+    except Exception as e:
+        return f"Error Conexión: {e}"
+
+def procesar_documento(ruta_archivo):
     ext = ruta_archivo.lower().split('.')[-1]
     texto_completo = ""
-    es_imagen = False
     
-    # 1. Extracción de Texto
     if ext in ['doc', 'docx']:
         texto_completo = extraer_texto_word(ruta_archivo)
     elif ext == 'pdf':
@@ -80,48 +170,26 @@ def analizar_con_ia_gemini(ruta_archivo):
                     t = p.extract_text()
                     if t: texto_completo += t + "\n"
         except: pass
-        if len(texto_completo) < 500: es_imagen = True
     
-    # 2. CONEXIÓN CON SINTAXIS NUEVA (SEGÚN TU GUÍA)
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        
-        prompt = """
-        Eres un Experto en Licitaciones. Extrae:
-        1. CARGO del personal clave.
-        2. PROFESIÓN.
-        3. EXPERIENCIA.
-        Responde SOLO con este formato:
-        👷 **[CARGO]**: [Profesión]
-        🕒 [Experiencia]
-        🎓 [Otros]
-        Si no hay, resume el OBJETO.
-        """
-
-        if es_imagen and ext == 'pdf':
-            # Modo Imagen
-            try:
-                print("      👁️ Modo Visión Activado...")
-                imagenes = convert_from_path(ruta_archivo, first_page=1, last_page=5)
-                # La nueva librería acepta objetos PIL.Image directamente en la lista contents
-                response = client.models.generate_content(
-                    model="gemini-1.5-flash",
-                    contents=[prompt, *imagenes] 
-                )
-                return response.text.strip()
-            except Exception as e:
-                return f"Error Visión: {e}"
-        else:
-            # Modo Texto
-            if len(texto_completo) < 50: return "Archivo vacío."
-            response = client.models.generate_content(
-                model="gemini-1.5-flash",
-                contents=[prompt, f"DOCUMENTO:\n{texto_completo[:30000]}"]
-            )
-            return response.text.strip()
-
-    except Exception as e:
-        return f"Error IA Oficial: {e}"
+    # Decisión: Texto vs Imagen
+    if len(texto_completo) < 500 and ext == 'pdf':
+        print("      👁️ Texto insuficiente. Activando Modo Visión...")
+        try:
+            imagenes = convert_from_path(ruta_archivo, first_page=1, last_page=5)
+            rutas_imgs = []
+            for i, img in enumerate(imagenes):
+                tmp_path = os.path.join(DOWNLOAD_DIR, f"temp_{i}.jpg")
+                img.save(tmp_path, 'JPEG')
+                rutas_imgs.append(tmp_path)
+            
+            res = analizar_con_ia_directo(rutas_imgs, es_imagen=True)
+            for r in rutas_imgs: os.remove(r)
+            return res
+        except Exception as e: return f"Error OCR: {e}"
+    elif len(texto_completo) < 50:
+        return "Archivo vacío/ilegible."
+    else:
+        return analizar_con_ia_directo(texto_completo, es_imagen=False)
 
 def restaurar_ubicacion(driver):
     try:
@@ -151,7 +219,7 @@ def restaurar_ubicacion(driver):
     except: return False
 
 def main():
-    print("Iniciando Robot 49.0 (LIBRERÍA OFICIAL GOOGLE-GENAI)...")
+    print("Iniciando Robot 50.0 (AUTO-DESCUBRIMIENTO IA)...")
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
@@ -166,6 +234,9 @@ def main():
         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
         time.sleep(5)
         restaurar_ubicacion(driver)
+        
+        # PRECALENTAMIENTO: Buscar el nombre del modelo UNA vez al inicio
+        obtener_modelo_dinamico()
         
         pag = 1
         while True:
@@ -248,9 +319,8 @@ def main():
                                 if f_path:
                                     enviar_telegram_archivo(f_path, f"📄 {nom}")
                                     pdf_st = "En Telegram ✅"
-                                    # LLAAMADA A LA IA NUEVA
-                                    analisis = analizar_con_ia_gemini(f_path)
-                                    print(f"   🧠 IA: {analisis[:30]}...")
+                                    analisis = procesar_documento(f_path)
+                                    print(f"   🧠 IA Responde: {analisis[:30]}...")
                                 else: print("   ❌ Timeout")
                             else: print("   ⚠️ Sin docs")
 
