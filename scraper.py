@@ -1,5 +1,4 @@
 import os
-import re
 import time
 import requests
 from selenium import webdriver
@@ -24,13 +23,12 @@ def forzar_click(driver, elemento):
     driver.execute_script("arguments[0].click();", elemento)
 
 def main():
-    print("Iniciando Robot 13.0 (Corrección Final)...")
+    print("Iniciando Robot 14.0 (Navegante Infinito)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # User Agent estándar
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(options=chrome_options)
@@ -41,13 +39,12 @@ def main():
         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
         time.sleep(8)
         
-        # Cambiar Pestaña
+        # Pestaña
         try:
             pestana = WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.PARTIAL_LINK_TEXT, "Buscador de Procedimientos")))
             forzar_click(driver, pestana)
             time.sleep(5)
         except:
-            print("⚠️ No pude cambiar pestaña por texto, intentando ID...")
             driver.execute_script("document.getElementById('frmBuscador:idTabBuscador_lbl').click();")
             time.sleep(5)
 
@@ -76,47 +73,21 @@ def main():
         print("Esperando tabla (20s)...")
         time.sleep(20)
 
-        # 2. LECTURA DE PAGINACIÓN (LOOP DE ESPERA)
-        total_paginas = 1
-        intentos = 0
-        texto_footer = ""
-        
-        print("Leyendo número de páginas...")
-        while intentos < 5:
-            try:
-                # Usamos textContent para leer texto aunque esté medio oculto
-                footer = driver.find_element(By.CSS_SELECTOR, ".ui-paginator-bottom")
-                texto_footer = footer.get_attribute("textContent")
-                
-                if texto_footer and "Página" in texto_footer:
-                    print(f"Texto encontrado: '{texto_footer}'")
-                    break
-                else:
-                    print("Texto vacío, esperando...")
-                    time.sleep(2)
-                    intentos += 1
-            except:
-                time.sleep(2)
-                intentos += 1
-
-        # Extraer número
-        match = re.search(r'/\s*(\d+)', texto_footer)
-        if match:
-            total_paginas = int(match.group(1))
-            print(f"✅ TOTAL PÁGINAS REAL: {total_paginas}")
-        else:
-            print(f"⚠️ No pude leer el número final. Texto visto: '{texto_footer}'. Asumo 1 página.")
-
-        # --- BUCLE ---
+        # 2. BUCLE INFINITO (Hasta que se acabe el botón 'Siguiente')
         pagina_actual = 1
         procesos_totales = 0
         
-        while pagina_actual <= total_paginas:
-            print(f"--- PÁGINA {pagina_actual}/{total_paginas} ---")
+        while True:
+            print(f"--- PROCESANDO PÁGINA {pagina_actual} ---")
             
-            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
+            # Esperar que haya filas
+            try:
+                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
+            except:
+                print("⚠️ No hay filas o tardó mucho. Terminando.")
+                break
+
             filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
-            
             if not filas: break
 
             datos_lote = []
@@ -135,33 +106,47 @@ def main():
                             "entidad": entidad,
                             "pdf": "Ver Link",
                             "analisis": objeto, 
-                            "fecha_real": fecha_pub # CLAVE PARA TU EXCEL
+                            "fecha_real": fecha_pub
                         })
                 except: continue
 
-            # ENVIAR Y VERIFICAR RESPUESTA
-            print(f"Enviando {len(datos_lote)} datos a Google...")
+            # Enviar Lote
+            print(f"Enviando {len(datos_lote)} items...")
             for dato in datos_lote:
-                r = requests.post(WEBHOOK_URL, json=dato)
-                # Esto imprimirá si Google aceptó el dato o dio error
-                if r.status_code != 200:
-                    print(f"❌ ERROR WEBHOOK: Código {r.status_code}. Revisa tu URL en GitHub Secrets.")
-                    break
+                requests.post(WEBHOOK_URL, json=dato)
             
             procesos_totales += len(datos_lote)
-            print(f"Acumulado: {procesos_totales}")
 
-            if pagina_actual < total_paginas:
-                try:
-                    next_btn = driver.find_element(By.CSS_SELECTOR, ".ui-paginator-next")
-                    if "ui-state-disabled" in next_btn.get_attribute("class"): break
-                    forzar_click(driver, next_btn)
-                    time.sleep(8)
-                    pagina_actual += 1
-                except: break
-            else: break
+            # 3. BUSCAR BOTÓN SIGUIENTE E INTENTAR AVANZAR
+            try:
+                # Buscamos el botón 'Siguiente' (la flechita >)
+                # En Primefaces suele ser span con clase .ui-paginator-next
+                next_btn = driver.find_element(By.CSS_SELECTOR, ".ui-paginator-next")
+                
+                # Verificamos si está deshabilitado (clase ui-state-disabled)
+                clases = next_btn.get_attribute("class")
+                if "ui-state-disabled" in clases:
+                    print("✅ Botón Siguiente deshabilitado. ¡Llegamos al final!")
+                    break
+                
+                # Si está activo, clicamos
+                forzar_click(driver, next_btn)
+                print("Avanzando a siguiente página...")
+                
+                # Espera crítica para que carguen los nuevos datos
+                time.sleep(10) 
+                pagina_actual += 1
+                
+                # Límite de seguridad (opcional, para que no corra infinito si hay error)
+                if pagina_actual > 50: 
+                    print("Límite de seguridad (50 páginas) alcanzado.")
+                    break
+                    
+            except Exception as e:
+                print(f"No encontré botón siguiente o error: {e}. Terminando.")
+                break
 
-        enviar_telegram_simple(f"✅ Fin. {procesos_totales} procesos extraídos.")
+        enviar_telegram_simple(f"✅ Misión Cumplida. {procesos_totales} procesos extraídos en {pagina_actual} páginas.")
 
     except Exception as e:
         print(f"❌ CRASH: {e}")
