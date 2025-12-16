@@ -23,20 +23,19 @@ def forzar_click(driver, elemento):
     driver.execute_script("arguments[0].click();", elemento)
 
 def main():
-    print("Iniciando Robot 19.0 (El Vigilante de Datos)...")
+    print("Iniciando Robot 21.0 (Target ID Exacto)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # User Agent para evitar bloqueos
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(options=chrome_options)
     driver.set_window_size(1920, 1080)
     
     try:
-        # 1. NAVEGACIÓN Y FILTROS
+        # 1. NAVEGACIÓN
         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
         time.sleep(8)
         
@@ -74,96 +73,98 @@ def main():
         print("Esperando tabla (20s)...")
         time.sleep(20)
 
-        # 2. BUCLE INTELIGENTE
+        # 2. BUCLE PRINCIPAL
         pagina_actual = 1
         procesos_totales = 0
+        texto_paginador_actual = "" # Guardaremos "Página: 1/34" aquí
         
         while True:
-            print(f"--- PÁGINA {pagina_actual} ---")
+            print(f"--- PROCESANDO PÁGINA {pagina_actual} ---")
             
-            # Esperar a que haya filas
+            # Esperar filas
             try:
                 WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
             except:
-                print("⚠️ No hay filas. Fin.")
+                print("⚠️ No cargaron filas. Fin.")
                 break
 
+            # Leer el texto del paginador ACTUAL para compararlo después
+            try:
+                # Usamos el ID exacto que me pasaste
+                paginador_bottom = driver.find_element(By.ID, "tbBuscador:idFormBuscarProceso:dtProcesos_paginator_bottom")
+                span_texto = paginador_bottom.find_element(By.CSS_SELECTOR, ".ui-paginator-current")
+                texto_paginador_actual = span_texto.text # Ej: "... Página: 1/34 ]"
+                print(f"Ubicación actual: {texto_paginador_actual}")
+            except:
+                print("No pude leer el texto del paginador, pero seguiré.")
+
+            # Extraer datos
             filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
             if not filas: break
-
-            # GUARDAMOS EL PRIMER DATO COMO "HUELLA DIGITAL" DE ESTA PÁGINA
-            huella_digital_actual = filas[0].text
             
-            # Extraer y Enviar Datos
             datos_lote = []
             for fila in filas:
                 try:
                     celdas = fila.find_elements(By.TAG_NAME, "td")
                     if len(celdas) > 6:
-                        entidad = celdas[1].text
-                        fecha_pub = celdas[2].text
-                        nomenclatura = celdas[3].text
-                        objeto = celdas[5].text 
-                        descripcion = celdas[6].text
-                        
                         datos_lote.append({
-                            "desc": f"{nomenclatura}\n{descripcion}",
-                            "entidad": entidad,
+                            "desc": f"{celdas[3].text}\n{celdas[6].text}",
+                            "entidad": celdas[1].text,
                             "pdf": "Pendiente",
-                            "analisis": objeto,
-                            "fecha_real": fecha_pub
+                            "analisis": celdas[5].text,
+                            "fecha_real": celdas[2].text
                         })
                 except: continue
 
             print(f"Enviando {len(datos_lote)} items...")
             for dato in datos_lote:
                 requests.post(WEBHOOK_URL, json=dato)
-            
             procesos_totales += len(datos_lote)
 
-            # 3. CAMBIAR PÁGINA (LÓGICA EL VIGILANTE)
+            # 3. CAMBIO DE PÁGINA (USANDO ID EXACTO)
             try:
-                # Buscamos el botón correcto (El de abajo)
-                # Selector ajustado a tu imagen: .ui-paginator-bottom .ui-paginator-next
-                next_btn = driver.find_element(By.CSS_SELECTOR, ".ui-paginator-bottom .ui-paginator-next")
+                # Buscamos el contenedor por su ID exacto
+                contenedor = driver.find_element(By.ID, "tbBuscador:idFormBuscarProceso:dtProcesos_paginator_bottom")
+                # Buscamos el botón "Siguiente" dentro de ese contenedor
+                next_btn = contenedor.find_element(By.CSS_SELECTOR, ".ui-paginator-next")
                 
+                # Verificamos si está deshabilitado
                 clases = next_btn.get_attribute("class")
                 if "ui-state-disabled" in clases:
-                    print("⛔ Botón gris detectado. Fin del camino.")
+                    print("⛔ Botón gris (clase ui-state-disabled). Fin del camino.")
                     break
                 
-                print("Haciendo CLIC en Siguiente...")
+                print("Haciendo clic en Siguiente...")
                 forzar_click(driver, next_btn)
                 
-                # --- LA MAGIA: ESPERAR A QUE LA TABLA CAMBIE ---
-                print("Vigilando que los datos cambien...")
-                datos_cambiaron = False
+                # --- LA VERIFICACIÓN DE ÉXITO ---
+                print("Esperando que cambie el número de página...")
+                cambio_detectado = False
                 
-                # Esperamos hasta 20 segundos chequeando cada segundo
-                for i in range(20):
+                for i in range(20): # Esperamos 20 segundos
                     time.sleep(1)
                     try:
-                        nuevas_filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
-                        if not nuevas_filas: continue
+                        # Releemos el texto del paginador
+                        p_bottom = driver.find_element(By.ID, "tbBuscador:idFormBuscarProceso:dtProcesos_paginator_bottom")
+                        nuevo_txt = p_bottom.find_element(By.CSS_SELECTOR, ".ui-paginator-current").text
                         
-                        nueva_huella = nuevas_filas[0].text
-                        
-                        # Si la primera fila es DIFERENTE a la anterior, significa que la página cambió
-                        if nueva_huella != huella_digital_actual:
-                            print(f"✅ ¡Datos cambiaron! Estamos en página nueva.")
-                            datos_cambiaron = True
+                        # Si el texto es diferente (Ej: cambió de 1/34 a 2/34), avanzamos
+                        if nuevo_txt != texto_paginador_actual:
+                            print(f"✅ ¡Cambio confirmado! Ahora en: {nuevo_txt}")
+                            cambio_detectado = True
                             break
                     except: pass
                 
-                if not datos_cambiaron:
-                    print("⚠️ Los datos NO cambiaron después de 20s. Asumo que se acabó.")
+                if cambio_detectado:
+                    pagina_actual += 1
+                else:
+                    print("⚠️ El número de página no cambió tras el clic. Asumo fin o bloqueo.")
                     break
-                
-                pagina_actual += 1
-                if pagina_actual > 100: break # Límite seguridad
                     
+                if pagina_actual > 100: break
+
             except Exception as e:
-                print(f"Error paginación: {e}")
+                print(f"Error en paginación: {e}")
                 break
 
         enviar_telegram_simple(f"✅ FIN TOTAL. {procesos_totales} procesos extraídos.")
