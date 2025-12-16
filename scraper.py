@@ -14,126 +14,116 @@ WEBHOOK_URL = os.environ['GOOGLE_WEBHOOK']
 TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
 CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 
-def enviar_telegram(ruta_pdf, nombre_archivo):
+def enviar_telegram(ruta_archivo, mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
     try:
-        with open(ruta_pdf, 'rb') as f:
+        with open(ruta_archivo, 'rb') as f:
             files = {'document': f}
-            data = {'chat_id': CHAT_ID, 'caption': f"📄 Bases: {nombre_archivo}"}
+            data = {'chat_id': CHAT_ID, 'caption': mensaje}
             requests.post(url, files=files, data=data)
-            return "Ver en Telegram"
+            return "Enviado a Telegram"
     except Exception as e:
-        print(f"Error Telegram: {e}")
-        return "Error al subir"
+        print(f"Error enviando a Telegram: {e}")
+        return "Error"
 
 def main():
-    print("Iniciando Robot 5.0 (Modo 'Rayos X')...")
+    print("Iniciando Robot 6.0 (Modo Fotógrafo)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # User Agent es vital para que no nos detecten como robot
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36")
+    # User Agent para parecer PC real
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(options=chrome_options)
-    driver.set_window_size(1920, 1080)
+    driver.set_window_size(1366, 768) # Tamaño de pantalla normal de laptop
     
     try:
         url_seace = "https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml"
         driver.get(url_seace)
         print("Entrando al SEACE...")
-        time.sleep(8) # Damos buen tiempo para cargar scripts
+        time.sleep(8) 
         
-        # TRUCO MAESTRO: Hacer visibles los selectores ocultos de PrimeFaces
-        print("Aplicando Rayos X para ver listas ocultas...")
+        # 1. SELECCIONAR AÑO (Lógica Reforzada)
+        print("Buscando selector de año...")
+        # Hacemos visible el select oculto
         driver.execute_script("var s = document.getElementsByTagName('select'); for(var i=0; i<s.length; i++){ s[i].style.display = 'block'; }")
-        time.sleep(1)
-
-        # 1. SELECCIONAR AÑO 2025
-        selects = driver.find_elements(By.TAG_NAME, "select")
-        anio_seleccionado = False
         
-        print(f"Encontré {len(selects)} listas desplegables. Buscando el año...")
+        selects = driver.find_elements(By.TAG_NAME, "select")
+        anio_ok = False
         
         for s in selects:
-            # Usamos 'textContent' porque 'text' a veces falla en elementos ocultos
-            texto_interno = s.get_attribute("textContent")
-            if "2025" in texto_interno and "2024" in texto_interno:
-                print("¡Lista de Años ENCONTRADA!")
-                
-                # Método 1: Selección directa Selenium
+            if "2025" in s.get_attribute("textContent"):
                 try:
-                    selector = Select(s)
-                    selector.select_by_visible_text("2025")
-                    print("Intento 1: Año seleccionado vía Selenium.")
-                    anio_seleccionado = True
+                    Select(s).select_by_visible_text("2025")
+                    # REFUERZO: Disparar evento de cambio manualmente para que la página reaccione
+                    driver.execute_script("arguments[0].dispatchEvent(new Event('change'));", s)
+                    print("Año 2025 seleccionado y evento 'change' disparado.")
+                    anio_ok = True
+                    break
                 except:
-                    print("Intento 1 falló. Probando fuerza bruta JavaScript...")
-                    
-                # Método 2: Fuerza bruta (Si el 1 falla o para asegurar)
-                if not anio_seleccionado:
-                    driver.execute_script("arguments[0].value = '2025'; arguments[0].dispatchEvent(new Event('change'));", s)
-                    print("Intento 2: Año forzado vía JavaScript.")
-                    anio_seleccionado = True
-                break
+                    continue
         
-        if not anio_seleccionado:
-            print("⚠️ ALERTA: No pude seleccionar el año. La búsqueda podría fallar.")
+        if not anio_ok:
+            print("⚠️ No pude seleccionar el año.")
         
-        time.sleep(2)
+        time.sleep(3) # Esperar a que la página procese el cambio de año
 
         # 2. CLICK EN BUSCAR
         print("Buscando botón 'Buscar'...")
-        # Buscamos botones o inputs que digan "Buscar"
-        botones = driver.find_elements(By.XPATH, "//button[contains(text(),'Buscar')] | //input[contains(@value,'Buscar')]")
-        
-        if botones:
-            print("Botón encontrado. Hiciendo clic...")
-            driver.execute_script("arguments[0].click();", botones[0])
-            print("Clic enviado. Esperando 15 segundos a que cargue la tabla...")
-            time.sleep(15) 
-        else:
-            print("No encontré botón por texto. Probando ID 'frmBuscador:btnBuscar'...")
-            try:
-                btn = driver.find_element(By.ID, "frmBuscador:btnBuscar")
-                driver.execute_script("arguments[0].click();", btn)
-                time.sleep(15)
-            except:
-                print("❌ No pude dar clic en Buscar.")
+        # Intento directo por ID (el más común en SEACE)
+        try:
+            btn = driver.find_element(By.ID, "frmBuscador:btnBuscar")
+            driver.execute_script("arguments[0].click();", btn)
+            print("Clic enviado al botón ID: frmBuscador:btnBuscar")
+        except:
+            # Plan B: Buscar por texto
+            print("Botón por ID no encontrado, buscando por texto...")
+            botones = driver.find_elements(By.XPATH, "//button[contains(text(),'Buscar')]")
+            if botones:
+                driver.execute_script("arguments[0].click();", botones[0])
+                print("Clic enviado al botón por Texto.")
+            else:
+                print("❌ NO ENCONTRÉ EL BOTÓN BUSCAR.")
 
-        # 3. EXTRAER RESULTADOS
+        print("Esperando 15 segundos resultados...")
+        time.sleep(15)
+
+        # 3. VERIFICAR RESULTADOS O TOMAR FOTO
         filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]") 
         
-        if not filas:
-            print("❌ La tabla sigue vacía.")
-            print("HTML parcial:", driver.page_source[:500])
-            return
-
-        print(f"✅ ¡ÉXITO TOTAL! Encontré {len(filas)} procesos.")
-        
-        # PROCESAMOS EL PRIMERO
-        fila = filas[0]
-        texto_fila = fila.text.replace("\n", " ") # Limpiamos saltos de linea
-        print(f"Proceso: {texto_fila[:100]}...")
-        
-        # SIMULACIÓN DE PDF
-        with open("reporte_seace.pdf", "w") as f:
-            f.write(f"Reporte generado. Proceso encontrado: {texto_fila}")
-        
-        link = enviar_telegram("reporte_seace.pdf", "Alerta_SEACE.pdf")
-        
-        payload = {
-            "desc": texto_fila, 
-            "entidad": "SEACE (GitHub)",
-            "pdf": link,
-            "analisis": f"Procesos hoy: {len(filas)}"
-        }
-        requests.post(WEBHOOK_URL, json=payload)
-        print("Datos enviados a Google Sheets.")
+        if filas:
+            print(f"✅ ¡ÉXITO! Encontré {len(filas)} procesos.")
+            fila = filas[0]
+            texto = fila.text.replace("\n", " ")
+            
+            # Crear PDF prueba
+            with open("reporte.pdf", "w") as f: f.write(texto)
+            enviar_telegram("reporte.pdf", "¡Búsqueda Exitosa!")
+            
+            # Guardar en Sheets
+            payload = {"desc": texto[:100], "entidad": "SEACE", "pdf": "Telegram", "analisis": "OK"}
+            requests.post(WEBHOOK_URL, json=payload)
+            
+        else:
+            print("❌ La tabla sigue vacía. ¡TOMANDO FOTO DEL ERROR!")
+            
+            # TOMA LA FOTO
+            driver.save_screenshot("error_pantalla.png")
+            print("Foto tomada. Enviando a Telegram...")
+            
+            # ENVÍA LA FOTO A TU TELEGRAM
+            enviar_telegram("error_pantalla.png", "⚠️ FOTO DEL ERROR: Mira qué pasó")
+            
+            # Imprime mensaje en log
+            print("Revisa tu Telegram, ahí está la respuesta visual.")
 
     except Exception as e:
-        print(f"❌ ERROR: {e}")
+        print(f"❌ ERROR CRÍTICO: {e}")
+        driver.save_screenshot("error_crash.png")
+        enviar_telegram("error_crash.png", f"Error Crash: {str(e)}")
+        
     finally:
         driver.quit()
 
