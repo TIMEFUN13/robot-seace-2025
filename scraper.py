@@ -35,7 +35,6 @@ def enviar_telegram_archivo(ruta_archivo, caption):
     except: return False
 
 def forzar_click(driver, elemento):
-    # Solo para elementos rebeldes que no sean el boton principal
     driver.execute_script("arguments[0].click();", elemento)
 
 def es_fecha_hoy(fecha_texto):
@@ -69,17 +68,14 @@ def analizar_con_ia_gemini(ruta_pdf):
         model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"""
         Eres un Ingeniero de Licitaciones. Analiza este texto técnico (TDR) del SEACE.
-        
         {texto_completo[:25000]}
         
-        Tu tarea es extraer los REQUISITOS DEL PERSONAL CLAVE.
-        Si no hay personal clave, resume el OBJETO DEL SERVICIO.
+        Extrae REQUISITOS DEL PERSONAL CLAVE.
+        Si no hay, resume el OBJETO DEL SERVICIO.
 
         Responde EXACTAMENTE con este formato:
-        
         👷 **[CARGO 1]**: [Profesión]
         🕒 [Experiencia requerida]
-        
         👷 **[CARGO 2]**: [Profesión]...
         """
         response = model.generate_content(prompt)
@@ -121,7 +117,7 @@ def recuperar_pagina(driver, pagina_objetivo):
     return False
 
 def main():
-    print("Iniciando Robot 31.0 (EL CLÁSICO + IA)...")
+    print("Iniciando Robot 32.0 (EL VISUAL)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
@@ -135,49 +131,35 @@ def main():
     driver.set_window_size(1920, 1080)
     
     try:
-        # 1. NAVEGACIÓN
+        # NAVEGACION
         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
         time.sleep(8)
-        
-        # Pestaña (Clic natural si es posible)
-        try:
-            pestana = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Buscador de Procedimientos")))
-            pestana.click()
-        except:
-            driver.execute_script("document.getElementById('frmBuscador:idTabBuscador_lbl').click();")
+        try: driver.execute_script("document.getElementById('frmBuscador:idTabBuscador_lbl').click();")
+        except: pass
         time.sleep(5)
 
-        # 2. AÑO 2025 (Inyección JS segura)
-        print("Seteando 2025...")
+        # AÑO 2025
         driver.execute_script("var s = document.getElementsByTagName('select'); for(var i=0; i<s.length; i++){ s[i].style.display = 'block'; }")
         selects = driver.find_elements(By.TAG_NAME, "select")
         for s in selects:
             if "2025" in s.get_attribute("textContent"):
                 driver.execute_script("arguments[0].value = '2025'; arguments[0].dispatchEvent(new Event('change'));", s)
                 break
-        time.sleep(3)
+        time.sleep(5)
 
-        # 3. BUSCAR (REGRESO AL CLIC NATURAL)
-        print("Clic en Buscar (Natural)...")
-        try:
-            # Intentamos buscar el botón por ID y darle clic NORMAL
-            btn = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "tbBuscador:idFormBuscarProceso:btnBuscarSel")))
-            btn.click() 
-        except:
-            print("⚠️ Clic natural falló, intentando JS...")
-            driver.execute_script("document.getElementById('tbBuscador:idFormBuscarProceso:btnBuscarSel').click();")
+        # BUSCAR
+        print("Buscando...")
+        try: driver.find_element(By.ID, "tbBuscador:idFormBuscarProceso:btnBuscarSel").click()
+        except: driver.execute_script("document.querySelector('.btnBuscar_buscadorProcesos').click();")
         
-        # Espera inteligente (hasta 60s, pero revisa cada 1s)
         print("Esperando tabla...")
         WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
         
         pag = 1
-        total = 0
         
         while True:
             print(f"--- ⛏️ PÁGINA {pag} ---")
             filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
-            
             if not filas: break
 
             for i in range(len(filas)):
@@ -205,56 +187,61 @@ def main():
                         if l.is_displayed(): cui=extraer_dato_popup(driver,l,"CUI")
                     except: pass
                     
+                    # FICHA
                     try:
                         btn_ficha = row.find_element(By.CSS_SELECTOR, "[id$=':grafichaSel']")
-                        # Clic forzado en ficha es OK, el buscador es el delicado
-                        forzar_click(driver, btn_ficha) 
+                        forzar_click(driver, btn_ficha)
                         time.sleep(5)
                         
                         pdf_st = "Sin Archivo"
-                        analisis = "Sin PDF"
+                        analisis = "Sin PDF para analizar"
                         
                         try:
+                            # 1. Limpiar carpeta
                             for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")): os.remove(f)
-                            WebDriverWait(driver,10).until(EC.presence_of_element_located((By.ID,"tbFicha:dtDocumentos_data")))
-                            docs = driver.find_elements(By.CSS_SELECTOR, "#tbFicha\\:dtDocumentos_data tr")
                             
-                            target_link = None
-                            for d in docs:
+                            # 2. Esperar tabla de documentos
+                            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID,"tbFicha:dtDocumentos_data")))
+                            
+                            # 3. LÓGICA VISUAL: BUSCAR EL ICONO DEL PDF
+                            # Buscamos cualquier imagen que tenga 'pdf' en su nombre (ej: pdf.png)
+                            # y hacemos clic en el enlace que la contiene.
+                            botones_descarga = driver.find_elements(By.CSS_SELECTOR, "#tbFicha\\:dtDocumentos_data img[src*='pdf']")
+                            
+                            if botones_descarga:
+                                print(f"⬇️ Icono PDF detectado. Descargando...")
+                                # Click en el primero que encuentre (suelen ser las Bases)
+                                boton = botones_descarga[0]
+                                # A veces el click debe ser en el padre <a>
                                 try:
-                                    lnk = d.find_element(By.TAG_NAME, "a")
-                                    txt = lnk.text.upper()
-                                    if "BASES" in txt or "TERMINOS" in txt or "RESUMEN" in txt:
-                                        target_link = lnk; break
-                                except: pass
-                            
-                            if not target_link:
-                                for d in docs:
-                                    try:
-                                        lnk = d.find_element(By.TAG_NAME, "a")
-                                        href = lnk.get_attribute("href")
-                                        if href and "pdf" in href: target_link = lnk; break
-                                    except: pass
-
-                            if target_link:
-                                print(f"⬇️ Descargando {nom[:20]}...")
-                                forzar_click(driver, target_link)
+                                    parent = boton.find_element(By.XPATH, "..")
+                                    forzar_click(driver, parent)
+                                except:
+                                    forzar_click(driver, boton)
+                                
+                                # 4. Esperar descarga
                                 f_path = None
-                                for _ in range(20):
+                                for _ in range(25): # Damos 25 segundos
                                     time.sleep(1)
                                     fs = glob.glob(os.path.join(DOWNLOAD_DIR, "*"))
-                                    if fs and not fs[0].endswith('.crdownload'): f_path = fs[0]; break
+                                    if fs and not fs[0].endswith('.crdownload'): 
+                                        f_path = fs[0]
+                                        break
                                 
                                 if f_path:
+                                    # EXITO!
                                     enviar_telegram_archivo(f_path, f"📄 {nom}")
                                     pdf_st = "En Telegram ✅"
                                     analisis = analizar_con_ia_gemini(f_path)
-                                    print(f"🧠 IA: {analisis[:30]}...")
-                                else: print("Timeout Descarga")
-                            else: print("No PDF Link")
+                                    print(f"🧠 IA Responde: {analisis[:30]}...")
+                                else:
+                                    print("❌ Timeout esperando archivo.")
+                            else:
+                                print("⚠️ No vi ningún icono de PDF en la tabla.")
 
-                        except Exception as e: print(f"ErrDocs: {e}")
+                        except Exception as e: print(f"Error Docs: {e}")
 
+                        # CRONOGRAMA
                         crono = ""
                         try:
                             t = driver.find_element(By.ID, "tbFicha:dtCronograma_data")
@@ -272,11 +259,11 @@ def main():
                             "pdf": pdf_st, "analisis": rep, "snip": snip, "cui": cui
                         }
                         requests.post(WEBHOOK_URL, json=payload)
-                        total += 1
                         
+                        # SALIR
                         try: 
                             b = driver.find_element(By.XPATH, "//button[contains(text(),'Regresar')]")
-                            b.click()
+                            forzar_click(driver, b)
                         except: driver.execute_script("window.history.back();")
                         
                         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
