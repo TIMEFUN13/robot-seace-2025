@@ -21,11 +21,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y poppler-utils antiword
 
-      - name: Instalar Librerías Python
+      - name: Instalar Librerías (NUEVA OFICIAL)
         run: |
           python -m pip install --upgrade pip
-          pip install --upgrade google-generativeai
           pip install selenium requests pdfplumber pypdf pdf2image python-docx
+          pip install -U google-genai
 
       - name: Ejecutar Scraper
         env:
