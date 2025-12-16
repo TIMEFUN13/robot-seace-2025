@@ -23,7 +23,7 @@ def forzar_click(driver, elemento):
     driver.execute_script("arguments[0].click();", elemento)
 
 def main():
-    print("Iniciando Robot 14.0 (Navegante Infinito)...")
+    print("Iniciando Robot 15.0 (Corrección de Paginador)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
@@ -73,15 +73,15 @@ def main():
         print("Esperando tabla (20s)...")
         time.sleep(20)
 
-        # 2. BUCLE INFINITO (Hasta que se acabe el botón 'Siguiente')
+        # 2. BUCLE INFINITO
         pagina_actual = 1
         procesos_totales = 0
         
         while True:
             print(f"--- PROCESANDO PÁGINA {pagina_actual} ---")
             
-            # Esperar que haya filas
             try:
+                # Esperamos que aparezca la tabla
                 WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
             except:
                 print("⚠️ No hay filas o tardó mucho. Terminando.")
@@ -110,43 +110,38 @@ def main():
                         })
                 except: continue
 
-            # Enviar Lote
             print(f"Enviando {len(datos_lote)} items...")
             for dato in datos_lote:
                 requests.post(WEBHOOK_URL, json=dato)
             
             procesos_totales += len(datos_lote)
 
-            # 3. BUSCAR BOTÓN SIGUIENTE E INTENTAR AVANZAR
+            # 3. PAGINACIÓN CORRECTA (TARGETEANDO EL DE ABAJO)
             try:
-                # Buscamos el botón 'Siguiente' (la flechita >)
-                # En Primefaces suele ser span con clase .ui-paginator-next
-                next_btn = driver.find_element(By.CSS_SELECTOR, ".ui-paginator-next")
+                # AQUÍ ESTÁ EL CAMBIO CLAVE: Buscamos dentro de .ui-paginator-bottom
+                next_btn = driver.find_element(By.CSS_SELECTOR, ".ui-paginator-bottom .ui-paginator-next")
                 
-                # Verificamos si está deshabilitado (clase ui-state-disabled)
                 clases = next_btn.get_attribute("class")
+                # Imprimimos las clases para ver en el log qué está pasando
+                print(f"Estado botón Siguiente: '{clases}'")
+                
                 if "ui-state-disabled" in clases:
-                    print("✅ Botón Siguiente deshabilitado. ¡Llegamos al final!")
+                    print("✅ Botón deshabilitado (gris). Fin del camino.")
                     break
                 
-                # Si está activo, clicamos
                 forzar_click(driver, next_btn)
                 print("Avanzando a siguiente página...")
-                
-                # Espera crítica para que carguen los nuevos datos
-                time.sleep(10) 
+                time.sleep(12) # Damos 2 segundos extra para asegurar carga
                 pagina_actual += 1
                 
-                # Límite de seguridad (opcional, para que no corra infinito si hay error)
-                if pagina_actual > 50: 
-                    print("Límite de seguridad (50 páginas) alcanzado.")
-                    break
+                # Seguridad: Tope de 500 páginas (casi ilimitado, pero evita bucles infinitos por error)
+                if pagina_actual > 500: break
                     
             except Exception as e:
-                print(f"No encontré botón siguiente o error: {e}. Terminando.")
+                print(f"No encontré el paginador de abajo: {e}")
                 break
 
-        enviar_telegram_simple(f"✅ Misión Cumplida. {procesos_totales} procesos extraídos en {pagina_actual} páginas.")
+        enviar_telegram_simple(f"✅ FIN. {procesos_totales} procesos en {pagina_actual} páginas.")
 
     except Exception as e:
         print(f"❌ CRASH: {e}")
