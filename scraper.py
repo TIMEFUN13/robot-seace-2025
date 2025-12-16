@@ -81,35 +81,34 @@ def analizar_con_ia_gemini(ruta_archivo):
     es_imagen = False
     
     if ext in ['doc', 'docx']:
-        print("      📄 Formato WORD detectado.")
+        print("      📄 Word detectado.")
         texto_completo = extraer_texto_word(ruta_archivo)
     elif ext == 'pdf':
-        print("      📄 Formato PDF detectado.")
+        print("      📄 PDF detectado.")
         try:
             with pdfplumber.open(ruta_archivo) as pdf:
                 for p in pdf.pages[:15]:
                     t = p.extract_text()
                     if t: texto_completo += t + "\n"
         except: pass
-        
         if len(texto_completo) < 100:
-            print("      👁️ Modo Visión (OCR) activado...")
+            print("      👁️ Modo Visión (OCR)...")
             es_imagen = True
-    else: return f"Formato no soportado ({ext})"
-
-    # --- LISTA DE MODELOS DE RESPALDO (SOLUCION ERROR 404) ---
-    modelos = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.0-pro', 'gemini-pro']
+    
+    # --- MODELOS ACTUALIZADOS (SIN EL ERROR 404) ---
+    # Usamos gemini-1.5-flash como principal, es el más rápido y estable hoy
+    modelos = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro']
     
     prompt = """
-    Eres un Ingeniero de Licitaciones. Analiza este documento (TDR/Bases).
-    Responde SOLO con esta estructura:
+    Rol: Ingeniero de Licitaciones.
+    Tarea: Extraer Personal Clave del TDR.
+    Formato OBLIGATORIO:
     👷 **[CARGO]**: [Profesión]
     🕒 [Experiencia]
     🎓 [Otros]
-    Si no hay personal, resume el OBJETO del servicio.
+    Si no hay personal, resume el OBJETO.
     """
     
-    ultimo_error = ""
     for nombre_modelo in modelos:
         try:
             model = genai.GenerativeModel(nombre_modelo)
@@ -117,34 +116,48 @@ def analizar_con_ia_gemini(ruta_archivo):
                 imgs = convert_from_path(ruta_archivo, first_page=1, last_page=6)
                 response = model.generate_content([prompt] + imgs)
             else:
-                if len(texto_completo) < 50: return "Archivo vacío/ilegible"
+                if len(texto_completo) < 20: return "Archivo vacío"
                 response = model.generate_content(f"{prompt}\n\nDOC:\n{texto_completo[:30000]}")
             
-            return response.text.strip() # ¡Si funciona, retornamos y salimos!
-        except Exception as e:
-            ultimo_error = str(e)
-            continue # Si falla, probamos el siguiente modelo
+            return response.text.strip()
+        except Exception:
+            continue 
             
-    return f"Error IA (Todos los modelos fallaron): {ultimo_error[:100]}"
+    return "Error IA: No se pudo conectar."
 
 def recuperar_pagina(driver, pagina_objetivo):
+    """
+    Función robusta: Si no encuentra la tabla, vuelve a BUSCAR.
+    """
     try:
+        # 1. ¿Estamos en la tabla?
+        try:
+            WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
+        except:
+            print("⚠️ Tabla perdida. Re-iniciando búsqueda...")
+            try: driver.execute_script("document.getElementById('tbBuscador:idFormBuscarProceso:btnBuscarSel').click();")
+            except: driver.execute_script("document.querySelector('.btnBuscar_buscadorProcesos').click();")
+            WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
+
+        # 2. Paginación
         p = driver.find_element(By.ID, "tbBuscador:idFormBuscarProceso:dtProcesos_paginator_bottom")
         txt = obtener_texto_seguro(p.find_element(By.CSS_SELECTOR, ".ui-paginator-current"))
         import re
         m = re.search(r'Página:\s*(\d+)', txt)
         act = int(m.group(1)) if m else 1
+        
         if act < pagina_objetivo:
+            print(f"🔄 Avanzando pág {act} -> {pagina_objetivo}")
             nxt = p.find_element(By.CSS_SELECTOR, ".ui-paginator-next")
             for _ in range(pagina_objetivo - act):
                 forzar_click(driver, nxt)
-                time.sleep(2.5)
+                time.sleep(3)
             return True
     except: pass
     return False
 
 def main():
-    print("Iniciando Robot 39.0 (EL TANQUE)...")
+    print("Iniciando Robot 40.0 (NAVEGACIÓN BLINDADA)...")
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
@@ -180,13 +193,19 @@ def main():
         while True:
             print(f"--- ⛏️ PÁGINA {pag} ---")
             time.sleep(3)
+            
+            # Re-encontrar filas en cada vuelta del bucle principal
             filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
             if not filas: break
+            
+            num_filas_detectadas = len(filas)
+            print(f"Detectadas {num_filas_detectadas} filas.")
 
-            for i in range(len(filas)):
+            for i in range(num_filas_detectadas):
                 try:
+                    # RE-ENCONTRAR TABLA (CLAVE PARA QUE NO FALLE EL SEGUNDO)
                     filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
-                    if i >= len(filas): break
+                    if i >= len(filas): break # Seguridad
                     row = filas[i]
                     cols = row.find_elements(By.TAG_NAME, "td")
                     
@@ -198,6 +217,8 @@ def main():
                     desc = obtener_texto_seguro(cols[6])
                     
                     if MODO_SOLO_HOY and not es_fecha_hoy(fecha): continue
+                    
+                    print(f"👉 Procesando {i+1}/{num_filas_detectadas}: {nom[:20]}...")
 
                     snip="-"; cui="-"
                     try:
@@ -214,33 +235,29 @@ def main():
                         analisis = "Sin Doc"
                         
                         try:
-                            # 1. LIMPIEZA NUCLEAR DE CARPETA
+                            # LIMPIEZA
                             for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")): 
                                 try: os.remove(f)
                                 except: pass
                             
                             WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID,"tbFicha:dtDocumentos_data")))
                             
-                            # 2. SELECCIÓN INTELIGENTE DE ARCHIVO
                             filas_docs = driver.find_elements(By.CSS_SELECTOR, "#tbFicha\\:dtDocumentos_data tr")
                             mejor_link = None
                             mejor_prio = 0
                             
                             for fd in filas_docs:
                                 try:
-                                    # Buscamos enlace de descarga
                                     enlaces = fd.find_elements(By.CSS_SELECTOR, "a[onclick*='descargaDocGeneral']")
                                     if not enlaces: continue
                                     lnk = enlaces[0]
-                                    
                                     txt_fila = obtener_texto_seguro(fd).upper()
                                     
-                                    # Prioridad: 3=Bases, 2=TDR, 1=Cualquier PDF, 0=Cualquier Word
                                     prio = 0
                                     if "BASES" in txt_fila: prio = 4
                                     elif "TDR" in txt_fila or "TERMINOS" in txt_fila: prio = 3
-                                    elif fd.find_elements(By.CSS_SELECTOR, "img[src*='pdf']"): prio = 2 # Es PDF generico
-                                    elif fd.find_elements(By.CSS_SELECTOR, "img[src*='word']"): prio = 1 # Es Word
+                                    elif fd.find_elements(By.CSS_SELECTOR, "img[src*='pdf']"): prio = 2
+                                    elif fd.find_elements(By.CSS_SELECTOR, "img[src*='word']"): prio = 1
                                     
                                     if prio >= mejor_prio:
                                         mejor_prio = prio
@@ -248,15 +265,13 @@ def main():
                                 except: pass
                             
                             if mejor_link:
-                                print(f"⬇️ Descargando (Prio {mejor_prio})...")
+                                print(f"   ⬇️ Descargando (Prio {mejor_prio})...")
                                 forzar_click(driver, mejor_link)
                                 f_path = None
                                 
-                                # Esperar hasta 30s
                                 for _ in range(30):
                                     time.sleep(1)
                                     fs = glob.glob(os.path.join(DOWNLOAD_DIR, "*"))
-                                    # Filtrar temporales
                                     validos = [f for f in fs if not f.endswith('.crdownload') and not f.endswith('.tmp') and os.path.getsize(f) > 0]
                                     if validos: 
                                         f_path = validos[0]; break
@@ -266,11 +281,11 @@ def main():
                                     enviar_telegram_archivo(f_path, f"📄 {nom}\n({nombre_real})")
                                     pdf_st = "En Telegram ✅"
                                     analisis = analizar_con_ia_gemini(f_path)
-                                    print(f"🧠 IA: {analisis[:30]}...")
-                                else: print("❌ Timeout: Archivo no apareció")
-                            else: print("⚠️ No se encontraron docs válidos")
+                                    print(f"   🧠 IA: {analisis[:30]}...")
+                                else: print("   ❌ Timeout descarga")
+                            else: print("   ⚠️ No hay docs descargables")
 
-                        except Exception as e: print(f"ErrDocs: {e}")
+                        except Exception as e: print(f"   ErrDocs: {e}")
 
                         crono = ""
                         try:
@@ -290,21 +305,23 @@ def main():
                         }
                         requests.post(WEBHOOK_URL, json=payload)
                         
+                        # --- RETROCESO SEGURO ---
                         try: 
                             b = driver.find_element(By.XPATH, "//button[contains(text(),'Regresar')]")
                             forzar_click(driver, b)
                         except: driver.execute_script("window.history.back();")
                         
-                        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
+                        # VERIFICAR SI LA TABLA SOBREVIVIÓ
                         recuperar_pagina(driver, pag)
                     
                     except: 
+                        print("⚠️ Error crítico en fila, recuperando...")
                         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
                         time.sleep(5)
                         continue
                 except: continue
 
-            print(f"✅ Pág {pag} Ok.")
+            print(f"✅ Pág {pag} terminada.")
             try:
                 pb = driver.find_element(By.ID, "tbBuscador:idFormBuscarProceso:dtProcesos_paginator_bottom")
                 nxt = pb.find_element(By.CSS_SELECTOR, ".ui-paginator-next")
