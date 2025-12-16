@@ -67,7 +67,7 @@ def analizar_con_ia_gemini(ruta_pdf):
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"""
-        Eres un Ingeniero de Licitaciones. Analiza este texto técnico (TDR) del SEACE.
+        Eres un Ingeniero de Licitaciones. Analiza este TDR del SEACE.
         {texto_completo[:25000]}
         
         Extrae REQUISITOS DEL PERSONAL CLAVE.
@@ -117,7 +117,7 @@ def recuperar_pagina(driver, pagina_objetivo):
     return False
 
 def main():
-    print("Iniciando Robot 32.0 (EL VISUAL)...")
+    print("Iniciando Robot 33.0 (EL CIRUJANO)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
@@ -138,7 +138,7 @@ def main():
         except: pass
         time.sleep(5)
 
-        # AÑO 2025
+        # AÑO 2025 (Inyección JS)
         driver.execute_script("var s = document.getElementsByTagName('select'); for(var i=0; i<s.length; i++){ s[i].style.display = 'block'; }")
         selects = driver.find_elements(By.TAG_NAME, "select")
         for s in selects:
@@ -147,12 +147,15 @@ def main():
                 break
         time.sleep(5)
 
-        # BUSCAR
+        # BUSCAR (JS Forzado para evitar timeout)
         print("Buscando...")
-        try: driver.find_element(By.ID, "tbBuscador:idFormBuscarProceso:btnBuscarSel").click()
-        except: driver.execute_script("document.querySelector('.btnBuscar_buscadorProcesos').click();")
+        try:
+            # Intentamos click JS directo al ID del botón
+            driver.execute_script("document.getElementById('tbBuscador:idFormBuscarProceso:btnBuscarSel').click();")
+        except:
+            driver.execute_script("document.querySelector('.btnBuscar_buscadorProcesos').click();")
         
-        print("Esperando tabla...")
+        print("Esperando tabla (60s)...")
         WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
         
         pag = 1
@@ -200,44 +203,50 @@ def main():
                             # 1. Limpiar carpeta
                             for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")): os.remove(f)
                             
-                            # 2. Esperar tabla de documentos
+                            # 2. Esperar tabla
                             WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID,"tbFicha:dtDocumentos_data")))
                             
-                            # 3. LÓGICA VISUAL: BUSCAR EL ICONO DEL PDF
-                            # Buscamos cualquier imagen que tenga 'pdf' en su nombre (ej: pdf.png)
-                            # y hacemos clic en el enlace que la contiene.
-                            botones_descarga = driver.find_elements(By.CSS_SELECTOR, "#tbFicha\\:dtDocumentos_data img[src*='pdf']")
+                            # 3. LÓGICA INFALIBLE: BUSCAR ENLACES CON 'descargaDocGeneral'
+                            # Buscamos todos los <a> que tengan ese script en su onclick
+                            enlaces_descarga = driver.find_elements(By.CSS_SELECTOR, "a[onclick*='descargaDocGeneral']")
                             
-                            if botones_descarga:
-                                print(f"⬇️ Icono PDF detectado. Descargando...")
-                                # Click en el primero que encuentre (suelen ser las Bases)
-                                boton = botones_descarga[0]
-                                # A veces el click debe ser en el padre <a>
+                            target_link = None
+                            
+                            # Prioridad: Bases
+                            for lnk in enlaces_descarga:
+                                # A veces el texto está en el <a>, a veces en la fila
                                 try:
-                                    parent = boton.find_element(By.XPATH, "..")
-                                    forzar_click(driver, parent)
-                                except:
-                                    forzar_click(driver, boton)
+                                    fila_padre = lnk.find_element(By.XPATH, "./../..")
+                                    texto_fila = fila_padre.text.upper()
+                                    if "BASES" in texto_fila or "ADMINISTRATIVAS" in texto_fila:
+                                        target_link = lnk
+                                        print("🎯 Encontradas Bases Administrativas")
+                                        break
+                                except: pass
+                            
+                            # Si no hay bases, agarramos el primero que tenga el script
+                            if not target_link and enlaces_descarga:
+                                target_link = enlaces_descarga[0]
+                                print("⚠️ Usando primer documento disponible")
+
+                            if target_link:
+                                print(f"⬇️ Ejecutando descargaDocGeneral...")
+                                forzar_click(driver, target_link)
                                 
-                                # 4. Esperar descarga
                                 f_path = None
-                                for _ in range(25): # Damos 25 segundos
+                                for _ in range(25):
                                     time.sleep(1)
                                     fs = glob.glob(os.path.join(DOWNLOAD_DIR, "*"))
                                     if fs and not fs[0].endswith('.crdownload'): 
-                                        f_path = fs[0]
-                                        break
+                                        f_path = fs[0]; break
                                 
                                 if f_path:
-                                    # EXITO!
                                     enviar_telegram_archivo(f_path, f"📄 {nom}")
                                     pdf_st = "En Telegram ✅"
                                     analisis = analizar_con_ia_gemini(f_path)
                                     print(f"🧠 IA Responde: {analisis[:30]}...")
-                                else:
-                                    print("❌ Timeout esperando archivo.")
-                            else:
-                                print("⚠️ No vi ningún icono de PDF en la tabla.")
+                                else: print("❌ Timeout esperando archivo")
+                            else: print("⚠️ No se encontraron enlaces de descarga válidos")
 
                         except Exception as e: print(f"Error Docs: {e}")
 
