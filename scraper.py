@@ -22,6 +22,7 @@ CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 GEMINI_API_KEY = os.environ['GEMINI_API_KEY']
 MODO_SOLO_HOY = False 
 
+# Configuración IA
 genai.configure(api_key=GEMINI_API_KEY)
 
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
@@ -66,12 +67,12 @@ def extraer_texto_word(ruta_archivo):
     return texto
 
 def analizar_con_ia_gemini(ruta_archivo):
-    print("      🧠 Consultando a Gemini...")
+    print("      🧠 Conectando a Gemini...")
     ext = ruta_archivo.lower().split('.')[-1]
     texto_completo = ""
     es_imagen = False
     
-    # 1. Extracción de Texto Base
+    # 1. Extracción
     if ext in ['doc', 'docx']:
         texto_completo = extraer_texto_word(ruta_archivo)
     elif ext == 'pdf':
@@ -82,61 +83,65 @@ def analizar_con_ia_gemini(ruta_archivo):
                     if t: texto_completo += t + "\n"
         except: pass
         
-        # UMBRAL MÁS ALTO: Si hay menos de 500 letras, seguro es escaneado -> Usar Visión
+        # Umbral 500 caracteres para decidir si es imagen
         if len(texto_completo) < 500: 
-            print("      👁️ Texto insuficiente. Activando Modo Visión...")
+            print("      👁️ Texto escaso. Activando Modo Visión...")
             es_imagen = True
     
-    # 2. Configuración del Modelo
-    # Usamos SOLO Flash, es el mejor. Eliminamos 'gemini-pro' para evitar error 404.
-    modelo_nombre = 'gemini-1.5-flash'
+    # 2. Selección de Modelo (A PRUEBA DE 404)
+    # Lista de variantes para probar
+    modelos_a_probar = [
+        'gemini-1.5-flash',
+        'gemini-1.5-flash-latest',
+        'gemini-1.5-pro',
+        'gemini-1.0-pro',
+        'models/gemini-1.5-flash'
+    ]
     
     prompt = """
-    Actúa como Experto en Licitaciones del Estado Peruano.
-    Analiza el siguiente documento (Bases/TDR).
+    Actúa como Experto en Licitaciones.
+    Extrae del documento:
+    1. CARGO del personal clave.
+    2. PROFESIÓN.
+    3. EXPERIENCIA.
     
-    Tu objetivo es extraer:
-    1. CARGO del personal clave requerido.
-    2. PROFESIÓN solicitada.
-    3. EXPERIENCIA (Tiempo y detalle).
-    
-    Formato de respuesta (lista simple):
+    Formato OBLIGATORIO:
     👷 **[CARGO]**: [Profesión]
     🕒 [Experiencia]
-    🎓 [Otros requisitos]
+    🎓 [Otros]
     
-    Si no encuentras personal clave explícito, resume en 2 líneas el OBJETO DEL SERVICIO.
+    Si no hay personal, resume el OBJETO.
     """
     
-    try:
-        model = genai.GenerativeModel(modelo_nombre)
-        response = None
-        
-        if es_imagen and ext == 'pdf':
-            # Modo Visión: Enviamos imágenes
-            try:
-                # Convertimos primeras 6 páginas a imágenes
-                imgs = convert_from_path(ruta_archivo, first_page=1, last_page=6)
-                response = model.generate_content([prompt] + imgs)
-            except Exception as e:
-                return f"Error procesando imágenes: {str(e)[:50]}"
-        else:
-            # Modo Texto
-            if len(texto_completo) < 50: return "Documento vacío o ilegible (Word/PDF sin texto)."
-            response = model.generate_content(f"{prompt}\n\nCONTENIDO:\n{texto_completo[:30000]}")
-        
-        # Verificamos respuesta
-        if response and response.text:
-            return response.text.strip()
-        else:
-            # Si la IA responde pero bloquea el texto (Safety Filters)
-            return f"IA bloqueó la respuesta (Seguridad/Filtro). Razón: {response.prompt_feedback}"
-
-    except Exception as e:
-        error_msg = str(e)
-        if "404" in error_msg: return "Error Modelo no encontrado (404)"
-        if "429" in error_msg: return "Error Cuota Excedida (429)"
-        return f"Error IA: {error_msg[:100]}"
+    error_log = ""
+    
+    for modelo in modelos_a_probar:
+        try:
+            model = genai.GenerativeModel(modelo)
+            response = None
+            
+            if es_imagen and ext == 'pdf':
+                try:
+                    imgs = convert_from_path(ruta_archivo, first_page=1, last_page=6)
+                    response = model.generate_content([prompt] + imgs)
+                except Exception as e:
+                    print(f"      ❌ Error visión con {modelo}: {e}")
+                    continue
+            else:
+                if len(texto_completo) < 50: return "Archivo vacío."
+                response = model.generate_content(f"{prompt}\n\nDOC:\n{texto_completo[:30000]}")
+            
+            # Si llegamos aquí, funcionó
+            if response and response.text:
+                return response.text.strip()
+                
+        except Exception as e:
+            # Si es 404, probamos el siguiente modelo calladitos
+            if "404" in str(e) or "not found" in str(e).lower():
+                continue
+            error_log = str(e)
+            
+    return f"Error IA: Ningún modelo respondió. Último error: {error_log[:50]}"
 
 def restaurar_ubicacion(driver):
     try:
@@ -166,7 +171,9 @@ def restaurar_ubicacion(driver):
     except: return False
 
 def main():
-    print("Iniciando Robot 45.0 (CEREBRO IA MEJORADO)...")
+    print(f"Iniciando Robot 46.0 (IA POLÍGLOTA)...")
+    print(f"Versión librería IA: {genai.__version__}") # DIAGNÓSTICO
+    
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
@@ -215,6 +222,7 @@ def main():
                         if l.is_displayed(): snip=driver.execute_script("return arguments[0].textContent", l)
                     except: pass
                     
+                    # --- BOTÓN FICHA (SEGUNDO ICONO) ---
                     celda_acciones = cols[-1]
                     botones = celda_acciones.find_elements(By.TAG_NAME, "a")
                     btn_ficha = None
@@ -233,7 +241,6 @@ def main():
                                 except: pass
                             
                             WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID,"tbFicha:dtDocumentos_data")))
-                            
                             filas_docs = driver.find_elements(By.CSS_SELECTOR, "#tbFicha\\:dtDocumentos_data tr")
                             mejor_link = None; mejor_prio = 0
                             
@@ -264,6 +271,7 @@ def main():
                                 if f_path:
                                     enviar_telegram_archivo(f_path, f"📄 {nom}")
                                     pdf_st = "En Telegram ✅"
+                                    # LLAAMADA A LA IA BLINDADA
                                     analisis = analizar_con_ia_gemini(f_path)
                                     print(f"   🧠 IA: {analisis[:20]}...")
                                 else: print("   ❌ Timeout")
