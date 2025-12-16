@@ -3,10 +3,12 @@ import time
 import glob
 import datetime
 import requests
+import subprocess # Para llamar a antiword (.doc)
 import pdfplumber
 import pypdf
 import google.generativeai as genai
-from pdf2image import convert_from_path # Nueva librería para convertir PDF a Imagen
+from docx import Document # Para leer .docx
+from pdf2image import convert_from_path
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -61,54 +63,81 @@ def limpiar_texto_snip(texto_sucio):
         return texto_sucio[:20]
     except: return texto_sucio
 
-def analizar_con_ia_gemini(ruta_pdf):
+def extraer_texto_word(ruta_archivo):
+    """Extrae texto de .doc y .docx"""
+    texto = ""
+    try:
+        if ruta_archivo.lower().endswith('.docx'):
+            doc = Document(ruta_archivo)
+            for para in doc.paragraphs:
+                texto += para.text + "\n"
+        elif ruta_archivo.lower().endswith('.doc'):
+            # Usar antiword desde línea de comandos linux
+            result = subprocess.run(['antiword', ruta_archivo], capture_output=True, text=True)
+            texto = result.stdout
+    except Exception as e:
+        print(f"Error leyendo Word: {e}")
+    return texto
+
+def analizar_con_ia_gemini(ruta_archivo):
     print("      🧠 Consultando a Gemini...")
+    
+    ext = ruta_archivo.lower().split('.')[-1]
     texto_completo = ""
     es_imagen = False
     
-    # INTENTO 1: Extracción de Texto Normal
-    try:
-        with pdfplumber.open(ruta_pdf) as pdf:
-            for p in pdf.pages[:15]:
-                t = p.extract_text()
-                if t: texto_completo += t + "\n"
-    except: pass
+    # --- ESTRATEGIA SEGÚN TIPO DE ARCHIVO ---
+    
+    if ext in ['doc', 'docx']:
+        print("      📄 Detectado formato WORD.")
+        texto_completo = extraer_texto_word(ruta_archivo)
+        
+    elif ext == 'pdf':
+        print("      📄 Detectado formato PDF.")
+        # Intento 1: Texto Digital
+        try:
+            with pdfplumber.open(ruta_archivo) as pdf:
+                for p in pdf.pages[:15]:
+                    t = p.extract_text()
+                    if t: texto_completo += t + "\n"
+        except: pass
+        
+        # Intento 2: Visión (Si no hay texto)
+        if len(texto_completo) < 100:
+            print("      👁️ Modo Visión Activado (PDF Escaneado)...")
+            es_imagen = True
+    else:
+        return f"Formato no soportado ({ext}). Solo PDF/DOC/DOCX."
 
-    # Si hay muy poco texto, asumimos que es ESCANEADO (IMAGEN)
-    if len(texto_completo) < 100:
-        print("      ⚠️ Texto no detectado. Activando MODO VISIÓN (OCR)...")
-        es_imagen = True
-
+    # --- CONSULTA A GEMINI ---
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
         
-        prompt_texto = """
-        Eres un Ingeniero de Licitaciones. Analiza este documento técnico (TDR).
-        Extrae los REQUISITOS DEL PERSONAL CLAVE.
-        Responde EXACTAMENTE con este formato:
-        👷 **[CARGO]**: [Profesión/Título]
-        🕒 [Experiencia Específica]
-        🎓 [Otros requisitos]
-        Si no hay personal, resume el OBJETO DEL SERVICIO.
+        prompt = """
+        Eres un Ingeniero de Licitaciones. Analiza este documento (TDR/Bases).
+        Extrae:
+        1. REQUISITOS DEL PERSONAL CLAVE (Cargo, Profesión, Tiempo de Experiencia).
+        2. Si no hay personal, resume el OBJETO del servicio.
+        
+        Responde EXACTAMENTE así:
+        👷 **[CARGO]**: [Profesión]
+        🕒 [Experiencia]
+        🎓 [Otros]
         """
 
-        if es_imagen:
-            # --- MODO VISIÓN: Enviamos IMÁGENES a Gemini ---
-            # Convertimos las primeras 6 páginas a imágenes (para no saturar memoria)
-            imagenes = convert_from_path(ruta_pdf, first_page=1, last_page=6)
-            
-            # Enviamos el prompt + las imágenes
-            contenido = [prompt_texto] + imagenes
-            response = model.generate_content(contenido)
+        if es_imagen and ext == 'pdf':
+            # Enviar imágenes a Gemini
+            imagenes = convert_from_path(ruta_archivo, first_page=1, last_page=6)
+            response = model.generate_content([prompt] + imagenes)
         else:
-            # --- MODO TEXTO: Enviamos el STRING extraído ---
-            response = model.generate_content(f"{prompt_texto}\n\nTEXTO DEL PDF:\n{texto_completo[:30000]}")
+            # Enviar texto (sea de Word o PDF)
+            if len(texto_completo) < 50: return "Archivo vacío o ilegible."
+            response = model.generate_content(f"{prompt}\n\nCONTENIDO DEL DOCUMENTO:\n{texto_completo[:30000]}")
             
         return response.text.strip()
 
     except Exception as e:
-        print(f"Error IA: {e}")
-        return "Error IA o PDF muy complejo"
+        return f"Error IA: {e}"
 
 def extraer_dato_popup(driver, boton_lupa, tipo):
     try:
@@ -145,7 +174,7 @@ def recuperar_pagina(driver, pagina_objetivo):
     return False
 
 def main():
-    print("Iniciando Robot 36.0 (MODO VISIÓN)...")
+    print("Iniciando Robot 38.0 (LECTOR UNIVERSAL WORD/PDF)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
@@ -159,14 +188,12 @@ def main():
     driver.set_window_size(1920, 1080)
     
     try:
-        # NAVEGACION
         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
         time.sleep(8)
         try: driver.execute_script("document.getElementById('frmBuscador:idTabBuscador_lbl').click();")
         except: pass
         time.sleep(5)
 
-        # AÑO 2025
         driver.execute_script("var s = document.getElementsByTagName('select'); for(var i=0; i<s.length; i++){ s[i].style.display = 'block'; }")
         selects = driver.find_elements(By.TAG_NAME, "select")
         for s in selects:
@@ -175,7 +202,6 @@ def main():
                 break
         time.sleep(5)
 
-        # BUSCAR
         print("Buscando...")
         try: driver.execute_script("document.getElementById('tbBuscador:idFormBuscarProceso:btnBuscarSel').click();")
         except: driver.execute_script("document.querySelector('.btnBuscar_buscadorProcesos').click();")
@@ -188,7 +214,6 @@ def main():
         while True:
             print(f"--- ⛏️ PÁGINA {pag} ---")
             time.sleep(3)
-            
             filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
             if not filas: break
 
@@ -200,15 +225,12 @@ def main():
                     cols = row.find_elements(By.TAG_NAME, "td")
                     
                     entidad = obtener_texto_seguro(cols[1])
+                    if not entidad: time.sleep(1); entidad = obtener_texto_seguro(cols[1])
                     fecha = obtener_texto_seguro(cols[2])
                     nom = obtener_texto_seguro(cols[3])
                     obj = obtener_texto_seguro(cols[5])
                     desc = obtener_texto_seguro(cols[6])
                     
-                    if not entidad:
-                        time.sleep(1)
-                        entidad = obtener_texto_seguro(cols[1])
-
                     if MODO_SOLO_HOY and not es_fecha_hoy(fecha): continue
 
                     snip="-"; cui="-"
@@ -221,49 +243,69 @@ def main():
                         if l.is_displayed(): cui=extraer_dato_popup(driver,l,"CUI")
                     except: pass
                     
-                    # FICHA
                     try:
                         btn_ficha = row.find_element(By.CSS_SELECTOR, "[id$=':grafichaSel']")
                         forzar_click(driver, btn_ficha)
                         time.sleep(5)
                         
                         pdf_st = "Sin Archivo"
-                        analisis = "Sin PDF"
+                        analisis = "Sin Doc"
                         
                         try:
                             for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")): os.remove(f)
                             WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID,"tbFicha:dtDocumentos_data")))
                             
-                            enlaces_descarga = driver.find_elements(By.CSS_SELECTOR, "a[onclick*='descargaDocGeneral']")
-                            target_link = None
+                            filas_docs = driver.find_elements(By.CSS_SELECTOR, "#tbFicha\\:dtDocumentos_data tr")
+                            mejor_link = None
+                            mejor_prioridad = 0
                             
-                            for lnk in enlaces_descarga:
+                            for fd in filas_docs:
                                 try:
-                                    fila_padre = lnk.find_element(By.XPATH, "./../..")
-                                    texto_fila = obtener_texto_seguro(fila_padre).upper()
-                                    if "BASES" in texto_fila or "ADMINISTRATIVAS" in texto_fila:
-                                        target_link = lnk; break
+                                    enlaces = fd.find_elements(By.CSS_SELECTOR, "a[onclick*='descargaDocGeneral']")
+                                    if not enlaces: continue
+                                    lnk = enlaces[0]
+                                    
+                                    # Analisis de nombre y extension (si es visible)
+                                    txt_fila = obtener_texto_seguro(fd).upper()
+                                    
+                                    # Prioridad Base:
+                                    prio = 1
+                                    if "BASES" in txt_fila or "ADMINISTRATIVAS" in txt_fila: prio = 3
+                                    elif "TERMINOS" in txt_fila or "TDR" in txt_fila: prio = 2
+                                    
+                                    if prio >= mejor_prioridad:
+                                        mejor_prioridad = prio
+                                        mejor_link = lnk
                                 except: pass
                             
-                            if not target_link and enlaces_descarga: target_link = enlaces_descarga[0]
-
-                            if target_link:
-                                print(f"⬇️ Descargando...")
-                                forzar_click(driver, target_link)
+                            if mejor_link:
+                                print(f"⬇️ Descargando doc prioritario...")
+                                forzar_click(driver, mejor_link)
                                 f_path = None
-                                for _ in range(25):
+                                
+                                # Esperar descarga (cualquier formato)
+                                for _ in range(30):
                                     time.sleep(1)
                                     fs = glob.glob(os.path.join(DOWNLOAD_DIR, "*"))
-                                    if fs and not fs[0].endswith('.crdownload'): f_path = fs[0]; break
+                                    # Ignoramos .crdownload y .tmp
+                                    validos = [f for f in fs if not f.endswith('.crdownload') and not f.endswith('.tmp')]
+                                    if validos: 
+                                        f_path = validos[0]; break
                                 
                                 if f_path:
-                                    enviar_telegram_archivo(f_path, f"📄 {nom}")
+                                    # Identificar extensión real
+                                    nombre_archivo = os.path.basename(f_path)
+                                    ext = nombre_archivo.split('.')[-1].lower()
+                                    
+                                    # Enviar a Telegram
+                                    enviar_telegram_archivo(f_path, f"📄 {nom}\n({nombre_archivo})")
                                     pdf_st = "En Telegram ✅"
-                                    # ANÁLISIS IA (Multimodal)
+                                    
+                                    # Analizar (Word o PDF)
                                     analisis = analizar_con_ia_gemini(f_path)
-                                    print(f"🧠 IA Responde: {analisis[:30]}...")
-                                else: print("❌ Timeout archivo")
-                            else: print("⚠️ Sin enlace")
+                                    print(f"🧠 IA: {analisis[:30]}...")
+                                else: print("❌ Timeout descarga")
+                            else: print("⚠️ No docs descargables")
 
                         except Exception as e: print(f"ErrDocs: {e}")
 
