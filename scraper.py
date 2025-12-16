@@ -4,7 +4,9 @@ import glob
 import datetime
 import requests
 import pdfplumber
+import pypdf
 import google.generativeai as genai
+from pdf2image import convert_from_path # Nueva librería para convertir PDF a Imagen
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -37,6 +39,13 @@ def enviar_telegram_archivo(ruta_archivo, caption):
 def forzar_click(driver, elemento):
     driver.execute_script("arguments[0].click();", elemento)
 
+def obtener_texto_seguro(elemento):
+    try:
+        txt = elemento.get_attribute("textContent")
+        if not txt: txt = elemento.text
+        return txt.strip()
+    except: return ""
+
 def es_fecha_hoy(fecha_texto):
     try:
         hoy = datetime.datetime.now().strftime("%d/%m/%Y")
@@ -55,47 +64,51 @@ def limpiar_texto_snip(texto_sucio):
 def analizar_con_ia_gemini(ruta_pdf):
     print("      🧠 Consultando a Gemini...")
     texto_completo = ""
+    es_imagen = False
+    
+    # INTENTO 1: Extracción de Texto Normal
     try:
         with pdfplumber.open(ruta_pdf) as pdf:
-            # Leemos primeras 15 paginas para asegurar captar los requisitos
             for p in pdf.pages[:15]:
                 t = p.extract_text()
                 if t: texto_completo += t + "\n"
-    except Exception as e: return f"Error lectura PDF: {e}"
+    except: pass
 
-    if len(texto_completo) < 50: return "PDF imagen/ilegible."
+    # Si hay muy poco texto, asumimos que es ESCANEADO (IMAGEN)
+    if len(texto_completo) < 100:
+        print("      ⚠️ Texto no detectado. Activando MODO VISIÓN (OCR)...")
+        es_imagen = True
 
     try:
-        # CAMBIO CLAVE: Usamos el nombre específico para evitar error 404
-        model = genai.GenerativeModel('gemini-1.5-flash-001') 
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
-        prompt = f"""
-        Eres un Ingeniero de Licitaciones. Analiza este TDR del SEACE.
-        {texto_completo[:30000]}
-        
-        Tu misión es extraer los REQUISITOS DEL PERSONAL CLAVE (Ingenieros, Técnicos, etc).
-        Busca secciones como "Perfil del Personal", "Requerimientos Técnicos" o "Personal Propuesto".
-        
-        Si NO encuentras personal clave, resume el ALCANCE DEL SERVICIO.
-
-        Responde EXACTAMENTE con este formato (Sin introducciones):
-        
+        prompt_texto = """
+        Eres un Ingeniero de Licitaciones. Analiza este documento técnico (TDR).
+        Extrae los REQUISITOS DEL PERSONAL CLAVE.
+        Responde EXACTAMENTE con este formato:
         👷 **[CARGO]**: [Profesión/Título]
-        🕒 [Experiencia Específica (Años/Meses)]
-        🎓 [Otros: Maestría, Colegiatura, etc.]
-        
-        (Repite para cada cargo importante)
+        🕒 [Experiencia Específica]
+        🎓 [Otros requisitos]
+        Si no hay personal, resume el OBJETO DEL SERVICIO.
         """
-        response = model.generate_content(prompt)
+
+        if es_imagen:
+            # --- MODO VISIÓN: Enviamos IMÁGENES a Gemini ---
+            # Convertimos las primeras 6 páginas a imágenes (para no saturar memoria)
+            imagenes = convert_from_path(ruta_pdf, first_page=1, last_page=6)
+            
+            # Enviamos el prompt + las imágenes
+            contenido = [prompt_texto] + imagenes
+            response = model.generate_content(contenido)
+        else:
+            # --- MODO TEXTO: Enviamos el STRING extraído ---
+            response = model.generate_content(f"{prompt_texto}\n\nTEXTO DEL PDF:\n{texto_completo[:30000]}")
+            
         return response.text.strip()
-    except Exception as e: 
-        # Si falla el Flash, intentamos con Pro como respaldo
-        try:
-            model_backup = genai.GenerativeModel('gemini-pro')
-            response = model_backup.generate_content(prompt)
-            return response.text.strip()
-        except:
-            return f"Error IA: {e}"
+
+    except Exception as e:
+        print(f"Error IA: {e}")
+        return "Error IA o PDF muy complejo"
 
 def extraer_dato_popup(driver, boton_lupa, tipo):
     try:
@@ -105,7 +118,7 @@ def extraer_dato_popup(driver, boton_lupa, tipo):
         texto = "No encontrado"
         for d in dialogos:
             if d.is_displayed():
-                texto = d.text.replace("\n", " | ")
+                texto = obtener_texto_seguro(d).replace("\n", " | ")
                 try:
                     c = d.find_element(By.CSS_SELECTOR, "a.ui-dialog-titlebar-close")
                     forzar_click(driver, c)
@@ -118,7 +131,7 @@ def extraer_dato_popup(driver, boton_lupa, tipo):
 def recuperar_pagina(driver, pagina_objetivo):
     try:
         p = driver.find_element(By.ID, "tbBuscador:idFormBuscarProceso:dtProcesos_paginator_bottom")
-        txt = p.find_element(By.CSS_SELECTOR, ".ui-paginator-current").text
+        txt = obtener_texto_seguro(p.find_element(By.CSS_SELECTOR, ".ui-paginator-current"))
         import re
         m = re.search(r'Página:\s*(\d+)', txt)
         act = int(m.group(1)) if m else 1
@@ -132,7 +145,7 @@ def recuperar_pagina(driver, pagina_objetivo):
     return False
 
 def main():
-    print("Iniciando Robot 34.0 (EL AFINADO)...")
+    print("Iniciando Robot 36.0 (MODO VISIÓN)...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
@@ -157,7 +170,7 @@ def main():
         driver.execute_script("var s = document.getElementsByTagName('select'); for(var i=0; i<s.length; i++){ s[i].style.display = 'block'; }")
         selects = driver.find_elements(By.TAG_NAME, "select")
         for s in selects:
-            if "2025" in s.get_attribute("textContent"):
+            if "2025" in obtener_texto_seguro(s):
                 driver.execute_script("arguments[0].value = '2025'; arguments[0].dispatchEvent(new Event('change'));", s)
                 break
         time.sleep(5)
@@ -174,8 +187,6 @@ def main():
         
         while True:
             print(f"--- ⛏️ PÁGINA {pag} ---")
-            
-            # PAUSA DE ESTABILIZACIÓN (Para que no salgan columnas vacías)
             time.sleep(3)
             
             filas = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
@@ -188,13 +199,16 @@ def main():
                     row = filas[i]
                     cols = row.find_elements(By.TAG_NAME, "td")
                     
-                    # Extracción con validación básica
-                    entidad = cols[1].text if len(cols) > 1 else "Error Entidad"
-                    fecha = cols[2].text if len(cols) > 2 else ""
-                    nom = cols[3].text if len(cols) > 3 else ""
-                    obj = cols[5].text if len(cols) > 5 else ""
-                    desc = cols[6].text if len(cols) > 6 else ""
+                    entidad = obtener_texto_seguro(cols[1])
+                    fecha = obtener_texto_seguro(cols[2])
+                    nom = obtener_texto_seguro(cols[3])
+                    obj = obtener_texto_seguro(cols[5])
+                    desc = obtener_texto_seguro(cols[6])
                     
+                    if not entidad:
+                        time.sleep(1)
+                        entidad = obtener_texto_seguro(cols[1])
+
                     if MODO_SOLO_HOY and not es_fecha_hoy(fecha): continue
 
                     snip="-"; cui="-"
@@ -214,7 +228,7 @@ def main():
                         time.sleep(5)
                         
                         pdf_st = "Sin Archivo"
-                        analisis = "Sin PDF para analizar"
+                        analisis = "Sin PDF"
                         
                         try:
                             for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")): os.remove(f)
@@ -223,11 +237,10 @@ def main():
                             enlaces_descarga = driver.find_elements(By.CSS_SELECTOR, "a[onclick*='descargaDocGeneral']")
                             target_link = None
                             
-                            # Prioridad Bases
                             for lnk in enlaces_descarga:
                                 try:
                                     fila_padre = lnk.find_element(By.XPATH, "./../..")
-                                    texto_fila = fila_padre.text.upper()
+                                    texto_fila = obtener_texto_seguro(fila_padre).upper()
                                     if "BASES" in texto_fila or "ADMINISTRATIVAS" in texto_fila:
                                         target_link = lnk; break
                                 except: pass
@@ -235,7 +248,7 @@ def main():
                             if not target_link and enlaces_descarga: target_link = enlaces_descarga[0]
 
                             if target_link:
-                                print(f"⬇️ Descargando doc...")
+                                print(f"⬇️ Descargando...")
                                 forzar_click(driver, target_link)
                                 f_path = None
                                 for _ in range(25):
@@ -246,11 +259,11 @@ def main():
                                 if f_path:
                                     enviar_telegram_archivo(f_path, f"📄 {nom}")
                                     pdf_st = "En Telegram ✅"
-                                    # Analisis IA
+                                    # ANÁLISIS IA (Multimodal)
                                     analisis = analizar_con_ia_gemini(f_path)
                                     print(f"🧠 IA Responde: {analisis[:30]}...")
                                 else: print("❌ Timeout archivo")
-                            else: print("⚠️ Sin enlace de descarga")
+                            else: print("⚠️ Sin enlace")
 
                         except Exception as e: print(f"ErrDocs: {e}")
 
@@ -258,10 +271,10 @@ def main():
                         try:
                             t = driver.find_element(By.ID, "tbFicha:dtCronograma_data")
                             for r in t.find_elements(By.TAG_NAME, "tr"):
-                                txt = r.text
+                                txt = obtener_texto_seguro(r)
                                 if "Propuestas" in txt or "Buena Pro" in txt:
                                     cc = r.find_elements(By.TAG_NAME, "td")
-                                    if len(cc)>=2: crono += f"📅 {cc[0].text}: {cc[1].text}\n"
+                                    if len(cc)>=2: crono += f"📅 {obtener_texto_seguro(cc[0])}: {obtener_texto_seguro(cc[1])}\n"
                         except: pass
 
                         rep = f"OBJETO: {obj}\n\n{crono}\n--- 🧠 ANÁLISIS IA ---\n{analisis}"
