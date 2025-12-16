@@ -27,6 +27,16 @@ genai.configure(api_key=GEMINI_API_KEY)
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
 if not os.path.exists(DOWNLOAD_DIR): os.makedirs(DOWNLOAD_DIR)
 
+def enviar_telegram_foto(ruta_foto, caption):
+    """Envía capturas de pantalla para depuración"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+    try:
+        with open(ruta_foto, 'rb') as f:
+            data = {'chat_id': CHAT_ID, 'caption': caption}
+            files = {'photo': f}
+            requests.post(url, data=data, files=files)
+    except: pass
+
 def enviar_telegram_archivo(ruta_archivo, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
     try:
@@ -39,6 +49,10 @@ def enviar_telegram_archivo(ruta_archivo, caption):
 
 def forzar_click(driver, elemento):
     driver.execute_script("arguments[0].click();", elemento)
+
+def resaltar_elemento(driver, elemento):
+    """Pone un borde rojo al elemento para ver cuál eligió"""
+    driver.execute_script("arguments[0].style.border='3px solid red';", elemento)
 
 def obtener_texto_seguro(elemento):
     try:
@@ -53,15 +67,6 @@ def es_fecha_hoy(fecha_texto):
         return fecha_texto[:10] == hoy
     except: return True
 
-def limpiar_texto_snip(texto_sucio):
-    try:
-        if "Sin información" in texto_sucio: return "-"
-        import re
-        numeros = re.findall(r'\d{6,8}', texto_sucio)
-        if numeros: return " / ".join(numeros)
-        return texto_sucio[:20]
-    except: return texto_sucio
-
 def extraer_texto_word(ruta_archivo):
     texto = ""
     try:
@@ -71,7 +76,7 @@ def extraer_texto_word(ruta_archivo):
         elif ruta_archivo.lower().endswith('.doc'):
             result = subprocess.run(['antiword', ruta_archivo], capture_output=True, text=True)
             texto = result.stdout
-    except Exception as e: print(f"Error Word: {e}")
+    except: pass
     return texto
 
 def analizar_con_ia_gemini(ruta_archivo):
@@ -81,30 +86,25 @@ def analizar_con_ia_gemini(ruta_archivo):
     es_imagen = False
     
     if ext in ['doc', 'docx']:
-        print("      📄 Word detectado.")
         texto_completo = extraer_texto_word(ruta_archivo)
     elif ext == 'pdf':
-        print("      📄 PDF detectado.")
         try:
             with pdfplumber.open(ruta_archivo) as pdf:
                 for p in pdf.pages[:15]:
                     t = p.extract_text()
                     if t: texto_completo += t + "\n"
         except: pass
-        if len(texto_completo) < 100:
-            print("      👁️ Modo Visión (OCR)...")
-            es_imagen = True
+        if len(texto_completo) < 100: es_imagen = True
     
     modelos = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro']
     
     prompt = """
     Rol: Ingeniero de Licitaciones.
     Tarea: Extraer Personal Clave del TDR.
-    Formato OBLIGATORIO:
+    Formato:
     👷 **[CARGO]**: [Profesión]
     🕒 [Experiencia]
-    🎓 [Otros]
-    Si no hay personal, resume el OBJETO.
+    Si no hay, resume el OBJETO.
     """
     
     for nombre_modelo in modelos:
@@ -112,7 +112,7 @@ def analizar_con_ia_gemini(ruta_archivo):
             model = genai.GenerativeModel(nombre_modelo)
             if es_imagen and ext == 'pdf':
                 try:
-                    imgs = convert_from_path(ruta_archivo, first_page=1, last_page=6)
+                    imgs = convert_from_path(ruta_archivo, first_page=1, last_page=5)
                     response = model.generate_content([prompt] + imgs)
                     return response.text.strip()
                 except: pass
@@ -120,41 +120,31 @@ def analizar_con_ia_gemini(ruta_archivo):
                 if len(texto_completo) < 20: return "Archivo vacío"
                 response = model.generate_content(f"{prompt}\n\nDOC:\n{texto_completo[:30000]}")
                 return response.text.strip()
-        except Exception: continue 
+        except: continue
             
-    return "Error IA: No se pudo conectar."
+    return "Error IA: Conexión fallida."
 
 def recuperar_pagina(driver, pagina_objetivo):
     """
-    Recuperación robusta: Si la tabla muere, la revive.
+    Intenta recuperar la tabla si desapareció.
     """
     try:
-        try:
-            WebDriverWait(driver, 3).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
-        except:
-            print("⚠️ Tabla perdida. Reactivando búsqueda...")
+        # FOTO DE DIAGNÓSTICO AL VOLVER
+        driver.save_screenshot("regreso.png")
+        enviar_telegram_foto("regreso.png", f"📸 Diagnóstico: Así se ve la pantalla al intentar ir al proceso {pagina_objetivo}")
+        
+        # Si no hay filas, pulsamos Buscar de nuevo
+        if not driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]"):
+            print("⚠️ Tabla vacía al volver. Refrescando...")
             try: driver.execute_script("document.getElementById('tbBuscador:idFormBuscarProceso:btnBuscarSel').click();")
             except: driver.execute_script("document.querySelector('.btnBuscar_buscadorProcesos').click();")
-            WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
-
-        p = driver.find_element(By.ID, "tbBuscador:idFormBuscarProceso:dtProcesos_paginator_bottom")
-        txt = obtener_texto_seguro(p.find_element(By.CSS_SELECTOR, ".ui-paginator-current"))
-        import re
-        m = re.search(r'Página:\s*(\d+)', txt)
-        act = int(m.group(1)) if m else 1
-        
-        if act < pagina_objetivo:
-            print(f"🔄 Recuperando Pág {act} -> {pagina_objetivo}")
-            nxt = p.find_element(By.CSS_SELECTOR, ".ui-paginator-next")
-            for _ in range(pagina_objetivo - act):
-                forzar_click(driver, nxt)
-                time.sleep(3)
-            return True
-    except: pass
-    return False
+            WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr[data-ri]")))
+            
+        return True
+    except: return False
 
 def main():
-    print("Iniciando Robot 42.0 (BOTÓN CORRECTO - SEGUNDO ICONO)...")
+    print("Iniciando Robot 43.0 (DETECTIVE)...")
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
@@ -193,7 +183,6 @@ def main():
             filas_iniciales = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
             if not filas_iniciales: break
             num_filas = len(filas_iniciales)
-            print(f"Filas detectadas: {num_filas}")
 
             for i in range(num_filas):
                 try:
@@ -203,44 +192,48 @@ def main():
                     row = filas[i]
                     cols = row.find_elements(By.TAG_NAME, "td")
                     
+                    nom = obtener_texto_seguro(cols[3])
                     entidad = obtener_texto_seguro(cols[1])
                     if not entidad: time.sleep(1); entidad = obtener_texto_seguro(cols[1])
                     fecha = obtener_texto_seguro(cols[2])
-                    nom = obtener_texto_seguro(cols[3])
                     obj = obtener_texto_seguro(cols[5])
                     desc = obtener_texto_seguro(cols[6])
                     
                     if MODO_SOLO_HOY and not es_fecha_hoy(fecha): continue
-                    print(f"👉 {i+1}/{num_filas}: {nom[:20]}...")
-
-                    snip="-"; cui="-"
-                    try:
-                        l=row.find_element(By.CSS_SELECTOR, "[id$=':graCodSnip']")
-                        if l.is_displayed(): snip=driver.execute_script("return arguments[0].textContent", l)
-                    except: pass
                     
-                    # --- CORRECCIÓN: CLIC EN EL SEGUNDO BOTÓN ---
-                    try:
-                        celda_acciones = cols[-1]
-                        botones = celda_acciones.find_elements(By.TAG_NAME, "a")
+                    # --- DETECCIÓN VISUAL DE BOTONES ---
+                    celda_acciones = cols[-1]
+                    botones = celda_acciones.find_elements(By.TAG_NAME, "a")
+                    btn_objetivo = None
+                    
+                    # Lógica: Buscar el que NO sea historial
+                    for btn in botones:
+                        try:
+                            # Buscamos si tiene imagen dentro
+                            imgs = btn.find_elements(By.TAG_NAME, "img")
+                            if imgs:
+                                src = imgs[0].get_attribute("src")
+                                if "Historial" not in src: # Si NO es historial, es la ficha
+                                    btn_objetivo = btn
+                                    break
+                        except: pass
+                    
+                    # Si falló la lógica inteligente, usar posición (el último suele ser la ficha)
+                    if not btn_objetivo and len(botones) > 0:
+                        btn_objetivo = botones[-1]
+
+                    if btn_objetivo:
+                        # 📸 FOTO EVIDENCIA ANTES DE CLICK
+                        resaltar_elemento(driver, btn_objetivo)
+                        driver.save_screenshot("objetivo.png")
+                        enviar_telegram_foto("objetivo.png", f"🎯 Voy a hacer clic aquí para: {nom[:20]}")
                         
-                        if len(botones) >= 2:
-                            # EL BOTÓN CORRECTO ES EL SEGUNDO (Índice 1)
-                            # El primero [0] es el reloj (historial)
-                            btn_ficha = botones[1] 
-                            forzar_click(driver, btn_ficha)
-                            time.sleep(6)
-                        elif len(botones) == 1:
-                            # Si solo hay uno, pues le damos a ese (mejor que nada)
-                            btn_ficha = botones[0]
-                            forzar_click(driver, btn_ficha)
-                            time.sleep(6)
-                        else:
-                            print("⚠️ No hay botones de acción.")
-                            continue 
+                        forzar_click(driver, btn_objetivo)
+                        time.sleep(6)
                         
-                        pdf_st = "Sin Archivo"
-                        analisis = "Sin Doc"
+                        # --- PROCESO DE DESCARGA ---
+                        pdf_st = "Sin Archivo"; analisis = "Sin Doc"
+                        snip="-"; cui="-" # Simplificado para debug
                         
                         try:
                             # Limpieza
@@ -259,11 +252,11 @@ def main():
                                     enlaces = fd.find_elements(By.CSS_SELECTOR, "a[onclick*='descargaDocGeneral']")
                                     if not enlaces: continue
                                     lnk = enlaces[0]
-                                    txt_fila = obtener_texto_seguro(fd).upper()
+                                    txt = obtener_texto_seguro(fd).upper()
                                     
                                     prio = 0
-                                    if "BASES" in txt_fila: prio = 4
-                                    elif "TDR" in txt_fila or "TERMINOS" in txt_fila: prio = 3
+                                    if "BASES" in txt: prio = 4
+                                    elif "TDR" in txt or "TERMINOS" in txt: prio = 3
                                     elif fd.find_elements(By.CSS_SELECTOR, "img[src*='pdf']"): prio = 2
                                     elif fd.find_elements(By.CSS_SELECTOR, "img[src*='word']"): prio = 1
                                     
@@ -273,60 +266,48 @@ def main():
                                 except: pass
                             
                             if mejor_link:
-                                print(f"   ⬇️ Descargando (Prio {mejor_prio})...")
+                                print(f"⬇️ Descargando...")
                                 forzar_click(driver, mejor_link)
                                 f_path = None
-                                
                                 for _ in range(30):
                                     time.sleep(1)
                                     fs = glob.glob(os.path.join(DOWNLOAD_DIR, "*"))
-                                    validos = [f for f in fs if not f.endswith('.crdownload') and not f.endswith('.tmp') and os.path.getsize(f) > 0]
-                                    if validos: 
-                                        f_path = validos[0]; break
+                                    validos = [f for f in fs if not f.endswith('.crdownload') and os.path.getsize(f) > 0]
+                                    if validos: f_path = validos[0]; break
                                 
                                 if f_path:
-                                    nombre_real = os.path.basename(f_path)
-                                    enviar_telegram_archivo(f_path, f"📄 {nom}\n({nombre_real})")
+                                    enviar_telegram_archivo(f_path, f"📄 {nom}")
                                     pdf_st = "En Telegram ✅"
                                     analisis = analizar_con_ia_gemini(f_path)
-                                    print(f"   🧠 IA: {analisis[:30]}...")
-                                else: print("   ❌ Timeout descarga")
-                            else: print("   ⚠️ No hay docs válidos")
+                                    print(f"🧠 IA: {analisis[:20]}...")
+                                else: print("❌ Timeout")
+                            else: print("⚠️ Sin docs")
 
-                        except Exception as e: print(f"   ErrDocs: {e}")
+                        except Exception as e: print(f"ErrDocs: {e}")
 
-                        crono = ""
-                        try:
-                            t = driver.find_element(By.ID, "tbFicha:dtCronograma_data")
-                            for r in t.find_elements(By.TAG_NAME, "tr"):
-                                txt = obtener_texto_seguro(r)
-                                if "Propuestas" in txt or "Buena Pro" in txt:
-                                    cc = r.find_elements(By.TAG_NAME, "td")
-                                    if len(cc)>=2: crono += f"📅 {obtener_texto_seguro(cc[0])}: {obtener_texto_seguro(cc[1])}\n"
-                        except: pass
-
+                        # Enviar a Sheets
+                        crono = "Ver Ficha" # Simplificado
                         rep = f"OBJETO: {obj}\n\n{crono}\n--- 🧠 ANÁLISIS IA ---\n{analisis}"
-                        
-                        payload = {
-                            "fecha_real": fecha, "desc": f"{nom}\n{desc}", "entidad": entidad,
-                            "pdf": pdf_st, "analisis": rep, "snip": snip, "cui": cui
-                        }
+                        payload = {"fecha_real": fecha, "desc": f"{nom}\n{desc}", "entidad": entidad, "pdf": pdf_st, "analisis": rep, "snip": snip, "cui": cui}
                         requests.post(WEBHOOK_URL, json=payload)
                         
+                        # --- RETROCESO ---
                         try: 
                             b = driver.find_element(By.XPATH, "//button[contains(text(),'Regresar')]")
                             forzar_click(driver, b)
                         except: driver.execute_script("window.history.back();")
                         
-                        if not recuperar_pagina(driver, pag):
-                            print("⚠️ Falló recuperación, reintentando...")
+                        # DIAGNÓSTICO VISUAL DEL REGRESO
+                        recuperar_pagina(driver, i+2) # Pasamos índice solo como referencia
+                        
+                    else:
+                        print("⚠️ No encontré botón ficha.")
                     
-                    except Exception as e: 
-                        print(f"⚠️ Error fila: {e}")
-                        driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
-                        time.sleep(5)
-                        continue
-                except: continue
+                except Exception as e: 
+                    print(f"⚠️ Error fila: {e}")
+                    driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
+                    time.sleep(5)
+                    continue
 
             print(f"✅ Pág {pag} terminada.")
             try:
