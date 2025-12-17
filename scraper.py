@@ -26,7 +26,6 @@ MODO_SOLO_HOY = False
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
 if not os.path.exists(DOWNLOAD_DIR): os.makedirs(DOWNLOAD_DIR)
 
-# VARIABLE GLOBAL PARA MODELO
 MODELO_ACTUAL = None
 
 def enviar_telegram_archivo(ruta_archivo, caption):
@@ -102,7 +101,6 @@ def clasificar_proceso(nombre_proceso, descripcion):
     nombre = nombre_proceso.upper()
     desc = descripcion.upper()
     
-    # 1. TIPO EXCEL
     tipo_excel = "OTROS"
     if "LP" in nombre or "LICITACION" in desc: tipo_excel = "LICITACIÓN PÚBLICA"
     elif "CP" in nombre or "CONCURSO" in desc: tipo_excel = "CONCURSO PÚBLICO"
@@ -111,7 +109,6 @@ def clasificar_proceso(nombre_proceso, descripcion):
     elif "SCI" in nombre or "CONSULTORES INDIVIDUALES" in desc: tipo_excel = "SEL. CONSULTORES INDIVIDUALES"
     elif "COMPRE" in nombre: tipo_excel = "COMPARACIÓN DE PRECIOS"
 
-    # 2. CATEGORÍA PROMPT
     categoria_prompt = "GENERAL"
     if "OBRA" in desc or "EJECUCION" in desc or "MANTENIMIENTO VIAL" in desc:
         categoria_prompt = "OBRA"
@@ -127,8 +124,6 @@ def clasificar_proceso(nombre_proceso, descripcion):
     return tipo_excel, categoria_prompt
 
 def obtener_prompt_experto(categoria):
-    # --- METODOLOGÍA RACE (Rol, Acción, Contexto, Expectativa) ---
-    
     if categoria == "OBRA":
         return """
         [ROL]: Actúa como Gerente Técnico de Infraestructura experto en Licitaciones Públicas de Obras.
@@ -230,14 +225,31 @@ def analizar_con_ia_directo(texto_o_imagenes, categoria_prompt="GENERAL", es_ima
         full_text = f"{prompt_race}\n\nDOCUMENTO A ANALIZAR:\n{texto_o_imagenes[:100000]}"
         payload["contents"].append({"parts": [{"text": full_text}]})
 
-    try:
-        response = requests.post(url, headers=headers, data=json.dumps(payload))
-        if response.status_code == 200:
-            return response.json()['candidates'][0]['content']['parts'][0]['text']
-        else:
-            return f"Error API {response.status_code}"
-    except Exception as e:
-        return f"Error Conexión: {e}"
+    # --- LÓGICA DE REINTENTO (RETRY) PARA ERRORES 503/429 ---
+    max_retries = 3
+    for intento in range(max_retries):
+        try:
+            response = requests.post(url, headers=headers, data=json.dumps(payload))
+            
+            if response.status_code == 200:
+                return response.json()['candidates'][0]['content']['parts'][0]['text']
+            
+            elif response.status_code in [503, 429, 500]:
+                # Error de servidor o cuota -> ESPERAR Y REINTENTAR
+                wait_time = (intento + 1) * 5 # Espera 5s, 10s, 15s...
+                print(f"      ⚠️ Error {response.status_code}. Google saturado. Reintentando en {wait_time}s...")
+                time.sleep(wait_time)
+                continue # Volver a probar
+            
+            else:
+                return f"Error API {response.status_code}: {response.text[:100]}"
+                
+        except Exception as e:
+            print(f"      ⚠️ Excepción conexión: {e}. Reintentando...")
+            time.sleep(5)
+            continue
+
+    return "Error IA: Servicio no disponible tras varios intentos (503)."
 
 def procesar_documento(ruta_archivo, categoria_prompt):
     ext = ruta_archivo.lower().split('.')[-1]
@@ -249,21 +261,17 @@ def procesar_documento(ruta_archivo, categoria_prompt):
     elif ext == 'pdf':
         try:
             with pdfplumber.open(ruta_archivo) as pdf:
-                # Lectura SIN LÍMITES de páginas
                 for p in pdf.pages:
                     t = p.extract_text()
                     if t: texto_completo += t + "\n"
         except: pass
     
-    # Decisión: Texto vs Imagen (Si <500 chars, es escaneado)
     if len(texto_completo) < 500 and ext == 'pdf':
         print("      👁️ Doc Escaneado. Activando OCR Total (Sin límites)...")
         try:
-            # Convertir TODAS las páginas a imágenes
             imagenes = convert_from_path(ruta_archivo) 
             rutas_imgs = []
             for i, img in enumerate(imagenes):
-                # Redimensionar para evitar Payload Too Large si son muchas págs
                 img = img.resize((1000, 1400)) 
                 tmp_path = os.path.join(DOWNLOAD_DIR, f"temp_{i}.jpg")
                 img.save(tmp_path, 'JPEG', quality=80)
@@ -277,7 +285,7 @@ def procesar_documento(ruta_archivo, categoria_prompt):
         except Exception as e: return f"Error OCR Masivo: {e}"
         
     elif len(texto_completo) < 50:
-        return "⚠️ Archivo vacío o ilegible."
+        return "⚠️ Archivo vacío."
     else:
         return analizar_con_ia_directo(texto_completo, categoria_prompt, es_imagen=False)
 
@@ -309,7 +317,7 @@ def restaurar_ubicacion(driver):
     except: return False
 
 def main():
-    print("Iniciando Robot 55.0 (CEREBRO ESTRATÉGICO RACE)...")
+    print("Iniciando Robot 56.0 (PROMPTS RACE + ANTI-503)...")
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
@@ -324,7 +332,7 @@ def main():
         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
         time.sleep(5)
         restaurar_ubicacion(driver)
-        obtener_modelo_dinamico() # Precalentar IA
+        obtener_modelo_dinamico() 
         
         pag = 1
         while True:
@@ -351,9 +359,8 @@ def main():
                     
                     if MODO_SOLO_HOY and not es_fecha_hoy(fecha): continue
                     
-                    # CLASIFICACIÓN
                     tipo_proceso, categoria_ia = clasificar_proceso(nom, desc)
-                    print(f"👉 {i+1}/{num_filas}: {nom[:15]}... [{tipo_proceso} - {categoria_ia}]")
+                    print(f"👉 {i+1}/{num_filas}: {nom[:15]}... [{categoria_ia}]")
 
                     snip="-"; cui="-"
                     try:
@@ -408,7 +415,6 @@ def main():
                                 if f_path:
                                     enviar_telegram_archivo(f_path, f"📄 {nom}")
                                     pdf_st = "En Telegram ✅"
-                                    # ENVIAMOS CATEGORIA A LA IA
                                     analisis = procesar_documento(f_path, categoria_ia)
                                     print(f"   🧠 IA: Resumen generado.")
                                 else: print("   ❌ Timeout")
@@ -416,7 +422,6 @@ def main():
 
                         except Exception as e: print(f"   ErrDocs: {e}")
 
-                        # PAYLOAD FINAL
                         rep = f"{analisis}"
                         payload = {
                             "fecha_real": fecha, 
