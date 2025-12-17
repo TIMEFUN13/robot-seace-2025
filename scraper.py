@@ -26,7 +26,7 @@ MODO_SOLO_HOY = False
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
 if not os.path.exists(DOWNLOAD_DIR): os.makedirs(DOWNLOAD_DIR)
 
-# VARIABLE GLOBAL PARA GUARDAR EL MODELO ENCONTRADO
+# VARIABLE GLOBAL PARA MODELO
 MODELO_ACTUAL = None
 
 def enviar_telegram_archivo(ruta_archivo, caption):
@@ -92,56 +92,142 @@ def obtener_modelo_dinamico():
             if candidato:
                 MODELO_ACTUAL = candidato
                 return MODELO_ACTUAL
-            MODELO_ACTUAL = "models/gemini-1.5-flash" 
-            return MODELO_ACTUAL
+            return "models/gemini-1.5-flash"
         else:
             return "models/gemini-1.5-flash"
     except:
         return "models/gemini-1.5-flash"
 
-def analizar_con_ia_directo(texto_o_imagenes, es_imagen=False):
+def clasificar_proceso(nombre_proceso, descripcion):
+    nombre = nombre_proceso.upper()
+    desc = descripcion.upper()
+    
+    # 1. TIPO EXCEL
+    tipo_excel = "OTROS"
+    if "LP" in nombre or "LICITACION" in desc: tipo_excel = "LICITACIÓN PÚBLICA"
+    elif "CP" in nombre or "CONCURSO" in desc: tipo_excel = "CONCURSO PÚBLICO"
+    elif "AS" in nombre or "ADJUDICACION SIMPLIFICADA" in desc: tipo_excel = "ADJUDICACIÓN SIMPLIFICADA"
+    elif "SIE" in nombre or "SUBASTA" in desc: tipo_excel = "SUBASTA INVERSA"
+    elif "SCI" in nombre or "CONSULTORES INDIVIDUALES" in desc: tipo_excel = "SEL. CONSULTORES INDIVIDUALES"
+    elif "COMPRE" in nombre: tipo_excel = "COMPARACIÓN DE PRECIOS"
+
+    # 2. CATEGORÍA PROMPT
+    categoria_prompt = "GENERAL"
+    if "OBRA" in desc or "EJECUCION" in desc or "MANTENIMIENTO VIAL" in desc:
+        categoria_prompt = "OBRA"
+    elif "CONSULTORIA" in desc or "SUPERVISION" in desc or "ESTUDIO" in desc or "ELABORACION" in desc:
+        categoria_prompt = "CONSULTORIA"
+    elif "SERVICIO" in desc or "CONTRATACION DE" in desc:
+        categoria_prompt = "SERVICIO"
+    elif "ADQUISICION" in desc or "COMPRA" in desc or "SUMINISTRO" in desc:
+        categoria_prompt = "BIEN"
+    
+    if "SIE" in nombre: categoria_prompt = "SUBASTA"
+        
+    return tipo_excel, categoria_prompt
+
+def obtener_prompt_experto(categoria):
+    # --- METODOLOGÍA RACE (Rol, Acción, Contexto, Expectativa) ---
+    
+    if categoria == "OBRA":
+        return """
+        [ROL]: Actúa como Gerente Técnico de Infraestructura experto en Licitaciones Públicas de Obras.
+        [CONTEXTO]: Estamos evaluando participar en esta ejecución de obra. Un error en los requisitos técnicos o financieros nos descalifica inmediatamente.
+        [ACCIÓN]: Analiza las bases integradas (TDR) y extrae los requisitos críticos de admisibilidad y puntaje.
+        [EXPECTATIVA]: Genera un reporte estratégico ESTRICTAMENTE con esta estructura:
+        
+        🎯 **ESTRATEGIA:** [Resumen de 1 línea sobre la magnitud de la obra]
+        💰 **SOLVENCIA (KILLER):**
+           * Facturación requerida: [Monto exacto y periodo]
+           * Línea de Crédito: [Monto exacto]
+        👷 **PLANTEL CLAVE:**
+           * [Cargo]: [Profesión] | [Experiencia exacta requerida]
+        🚜 **MAQUINARIA CRÍTICA:**
+           * [Equipo] | [Antigüedad máxima permitida]
+        🏆 **PUNTAJE EXTRA:** [¿Qué nos da ventaja?]
+        """
+    elif categoria == "CONSULTORIA":
+        return """
+        [ROL]: Actúa como Especialista Senior en Concursos de Méritos y Consultoría.
+        [CONTEXTO]: En consultoría, la experiencia del personal y la metodología definen al ganador. Necesitamos saber si cumplimos el perfil.
+        [ACCIÓN]: Audita los Términos de Referencia y detecta los requisitos del equipo humano.
+        [EXPECTATIVA]: Genera un reporte estratégico ESTRICTAMENTE con esta estructura:
+
+        🎯 **ESTRATEGIA:** [Tipo de estudio o supervisión]
+        🧠 **JEFE DE PROYECTO (CRÍTICO):**
+           * Profesión: [Carrera exacta]
+           * Grados: [¿Pide Maestría/Doctorado?]
+           * Experiencia: [Tiempo exacto en meses/años]
+        👥 **EQUIPO TÉCNICO:**
+           * [Especialista]: [Requisito clave]
+        🏆 **FACTORES DE EVALUACIÓN:** [¿Qué da más puntos? ¿Metodología? ¿ISO?]
+        💼 **EXPERIENCIA EMPRESA:** [Monto facturado requerido]
+        """
+    elif categoria == "BIEN":
+        return """
+        [ROL]: Actúa como Jefe de Compras y Logística del Estado.
+        [CONTEXTO]: Es una adquisición de bienes. Si el producto no cumple una especificación técnica o el plazo, nos ejecutan la penalidad.
+        [ACCIÓN]: Extrae las especificaciones técnicas "duras" y las condiciones de entrega.
+        [EXPECTATIVA]: Genera un reporte estratégico ESTRICTAMENTE con esta estructura:
+
+        🎯 **PRODUCTO:** [Nombre y cantidad principal]
+        ⚙️ **ESPECIFICACIONES TÉCNICAS (NO NEGOCIABLES):**
+           * [Características clave: Material, Medidas, Normas Técnicas]
+        🧪 **MUESTRAS:** [¿Se exige presentación de muestras? SÍ/NO y cuándo]
+        🚚 **LOGÍSTICA:**
+           * Plazo: [Días calendario]
+           * Lugar: [Punto de entrega]
+        📄 **DOCUMENTACIÓN OBLIGATORIA:** [Fichas técnicas, manuales, registros sanitarios]
+        """
+    elif categoria == "SUBASTA":
+        return """
+        [ROL]: Actúa como Analista de Costos para Subasta Inversa Electrónica.
+        [CONTEXTO]: En SIE solo importa el precio y cumplir la ficha técnica para ser admitido. No hay puntaje técnico.
+        [ACCIÓN]: Verifica la admisibilidad del producto.
+        [EXPECTATIVA]: Genera un reporte rápido ESTRICTAMENTE con esta estructura:
+
+        ⚡ **FICHA PERÚ COMPRAS:** [Código o nombre de la ficha técnica]
+        🚫 **REQUISITOS HABILITANTES:** [Documentos obligatorios para no ser depurado]
+        📍 **DESTINO:** [Lugar de entrega para cálculo de flete]
+        📅 **FECHA PUJA:** [Si aparece, indícala]
+        """
+    else: # SERVICIO GENERAL
+        return """
+        [ROL]: Actúa como Administrador de Contratos de Servicios.
+        [CONTEXTO]: Proceso de contratación de servicios generales (limpieza, seguridad, mantenimiento). El volumen de personal y cumplimiento laboral es clave.
+        [ACCIÓN]: Extrae los requisitos operativos y documentales.
+        [EXPECTATIVA]: Genera un reporte estratégico ESTRICTAMENTE con esta estructura:
+
+        🎯 **SERVICIO:** [Alcance principal]
+        👥 **PERSONAL OPERATIVO:**
+           * Cantidad: [Número de operarios]
+           * Requisitos: [Estudios, cursos, carnets]
+        🛠️ **EQUIPAMIENTO/MATERIALES:** [Lista de lo que debemos poner]
+        📜 **DOCUMENTACIÓN:** [Registros obligatorios como RENSSC, SUCAMEC, etc.]
+        💼 **EXPERIENCIA:** [Facturación requerida]
+        """
+
+def analizar_con_ia_directo(texto_o_imagenes, categoria_prompt="GENERAL", es_imagen=False):
     nombre_modelo = obtener_modelo_dinamico()
     if not nombre_modelo.startswith("models/"): nombre_modelo = f"models/{nombre_modelo}"
     
-    print(f"      📡 Enviando TODO el contenido a {nombre_modelo}...")
+    print(f"      📡 Enviando a {nombre_modelo} (Modo: {categoria_prompt})...")
     url = f"https://generativelanguage.googleapis.com/v1beta/{nombre_modelo}:generateContent?key={GEMINI_API_KEY}"
     headers = {'Content-Type': 'application/json'}
     
-    # --- TU PROMPT DE EXPERTO (TEXTUAL) ---
-    prompt = """
-    ERES UN EXPERTO EN ASESORIA PARA LICITACIONES O CONCURSOS O MANEJO DEL SEACE DEL PERU. 
-    QUIERO QUE LEAS EL DOCUMENTO O DOCUMENTOS PARA DETERMINAR LOS REQUISITOS QUE SE ESTÁ PIDIENDO PARA PODER GANAR ESA PUESTA, O QUE SE NECESITA EN SI, QUE PERSONAL, QUE EXPERIENCIA ETC. 
-    TU ERES EL EXPERTO EN ESTAS ASESORIAS Y DEBES SABER LO NECESARIO PARA DECIRME Y PODER AVANZAR EN EL PROCESO.
-
-    Por favor, estructura tu respuesta de forma estratégica para un ingeniero/empresa:
+    prompt_race = obtener_prompt_experto(categoria_prompt)
     
-    🎯 **ESTRATEGIA PARA GANAR:**
-    [Resumen ejecutivo de qué se trata y la clave del éxito]
-
-    📋 **REQUISITOS OBLIGATORIOS (ADMISIÓN):**
-    * [Documentos críticos, RNP, ISOs, Anexos obligatorios]
-    * [Facturación requerida]
-
-    👷 **PERSONAL CLAVE (REQUISITOS TÉCNICOS):**
-    * [Cargo]: [Profesión exacta] | [Tiempo experiencia] | [Capacitaciones específicas]
-
-    🏆 **FACTORES DE EVALUACIÓN (PUNTAJE EXTRA):**
-    * [¿Qué da más puntos?]
-    """
-
     payload = {"contents": []}
     
     if es_imagen:
-        parts = [{"text": prompt}]
-        # Aquí enviamos TODAS las imágenes procesadas
+        parts = [{"text": prompt_race}]
         for img_path in texto_o_imagenes:
             with open(img_path, "rb") as image_file:
                 b64_data = base64.b64encode(image_file.read()).decode('utf-8')
                 parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64_data}})
         payload["contents"].append({"parts": parts})
     else:
-        # Aumentamos el límite de caracteres para texto masivo
-        full_text = f"{prompt}\n\nDOCUMENTO COMPLETO:\n{texto_o_imagenes[:100000]}" 
+        full_text = f"{prompt_race}\n\nDOCUMENTO A ANALIZAR:\n{texto_o_imagenes[:100000]}"
         payload["contents"].append({"parts": [{"text": full_text}]})
 
     try:
@@ -149,61 +235,51 @@ def analizar_con_ia_directo(texto_o_imagenes, es_imagen=False):
         if response.status_code == 200:
             return response.json()['candidates'][0]['content']['parts'][0]['text']
         else:
-            return f"Error API {response.status_code}: {response.text[:100]}"
+            return f"Error API {response.status_code}"
     except Exception as e:
         return f"Error Conexión: {e}"
 
-def procesar_documento(ruta_archivo):
+def procesar_documento(ruta_archivo, categoria_prompt):
     ext = ruta_archivo.lower().split('.')[-1]
     texto_completo = ""
-    
-    print(f"      📖 Leyendo documento completo: {os.path.basename(ruta_archivo)}")
+    print(f"      📖 Leyendo doc ({categoria_prompt})...")
 
     if ext in ['doc', 'docx']:
         texto_completo = extraer_texto_word(ruta_archivo)
     elif ext == 'pdf':
         try:
             with pdfplumber.open(ruta_archivo) as pdf:
-                # --- SIN LÍMITES: Leemos TODAS las páginas ---
+                # Lectura SIN LÍMITES de páginas
                 for p in pdf.pages:
                     t = p.extract_text()
                     if t: texto_completo += t + "\n"
         except: pass
     
-    # Decisión: Texto vs Imagen
-    # Si hay poco texto digital (o es 0), asumimos que es ESCANEADO -> Modo Visión
+    # Decisión: Texto vs Imagen (Si <500 chars, es escaneado)
     if len(texto_completo) < 500 and ext == 'pdf':
-        print("      👁️ Documento Escaneado detectado. Procesando TODAS las páginas (esto puede tomar un momento)...")
+        print("      👁️ Doc Escaneado. Activando OCR Total (Sin límites)...")
         try:
-            # --- SIN LÍMITES: Convertimos TODAS las páginas a imágenes ---
-            # OJO: Si son 100 páginas, tomará un rato.
+            # Convertir TODAS las páginas a imágenes
             imagenes = convert_from_path(ruta_archivo) 
-            
             rutas_imgs = []
-            # Guardamos las imágenes temporalmente
             for i, img in enumerate(imagenes):
-                # Redimensionamos un poco para no explotar la API si son muchas
+                # Redimensionar para evitar Payload Too Large si son muchas págs
                 img = img.resize((1000, 1400)) 
                 tmp_path = os.path.join(DOWNLOAD_DIR, f"temp_{i}.jpg")
                 img.save(tmp_path, 'JPEG', quality=80)
                 rutas_imgs.append(tmp_path)
             
-            print(f"      📤 Enviando {len(rutas_imgs)} páginas a la IA...")
-            res = analizar_con_ia_directo(rutas_imgs, es_imagen=True)
-            
-            # Limpieza
+            res = analizar_con_ia_directo(rutas_imgs, categoria_prompt, es_imagen=True)
             for r in rutas_imgs: 
                 try: os.remove(r)
                 except: pass
             return res
-            
         except Exception as e: return f"Error OCR Masivo: {e}"
         
     elif len(texto_completo) < 50:
         return "⚠️ Archivo vacío o ilegible."
     else:
-        print(f"      📤 Enviando {len(texto_completo)} caracteres de texto a la IA...")
-        return analizar_con_ia_directo(texto_completo, es_imagen=False)
+        return analizar_con_ia_directo(texto_completo, categoria_prompt, es_imagen=False)
 
 def restaurar_ubicacion(driver):
     try:
@@ -233,7 +309,7 @@ def restaurar_ubicacion(driver):
     except: return False
 
 def main():
-    print("Iniciando Robot 53.0 (MODO EXPERTO SIN LÍMITES)...")
+    print("Iniciando Robot 55.0 (CEREBRO ESTRATÉGICO RACE)...")
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
@@ -248,7 +324,7 @@ def main():
         driver.get("https://prod2.seace.gob.pe/seacebus-uiwd-pub/buscadorPublico/buscadorPublico.xhtml")
         time.sleep(5)
         restaurar_ubicacion(driver)
-        obtener_modelo_dinamico() 
+        obtener_modelo_dinamico() # Precalentar IA
         
         pag = 1
         while True:
@@ -256,7 +332,6 @@ def main():
             filas_iniciales = driver.find_elements(By.CSS_SELECTOR, "tr[data-ri]")
             if not filas_iniciales: break
             num_filas = len(filas_iniciales)
-            print(f"Filas detectadas: {num_filas}")
 
             for i in range(num_filas):
                 try:
@@ -275,7 +350,10 @@ def main():
                     desc = obtener_texto_seguro(cols[6])
                     
                     if MODO_SOLO_HOY and not es_fecha_hoy(fecha): continue
-                    print(f"👉 {i+1}/{num_filas}: {nom[:20]}...")
+                    
+                    # CLASIFICACIÓN
+                    tipo_proceso, categoria_ia = clasificar_proceso(nom, desc)
+                    print(f"👉 {i+1}/{num_filas}: {nom[:15]}... [{tipo_proceso} - {categoria_ia}]")
 
                     snip="-"; cui="-"
                     try:
@@ -330,16 +408,26 @@ def main():
                                 if f_path:
                                     enviar_telegram_archivo(f_path, f"📄 {nom}")
                                     pdf_st = "En Telegram ✅"
-                                    # LLAAMADA A LA IA SIN LÍMITES
-                                    analisis = procesar_documento(f_path)
-                                    print(f"   🧠 IA: Resumen generado correctamente.")
+                                    # ENVIAMOS CATEGORIA A LA IA
+                                    analisis = procesar_documento(f_path, categoria_ia)
+                                    print(f"   🧠 IA: Resumen generado.")
                                 else: print("   ❌ Timeout")
                             else: print("   ⚠️ Sin docs")
 
                         except Exception as e: print(f"   ErrDocs: {e}")
 
+                        # PAYLOAD FINAL
                         rep = f"{analisis}"
-                        payload = {"fecha_real": fecha, "desc": f"{nom}\n{desc}", "entidad": entidad, "pdf": pdf_st, "analisis": rep, "snip": snip, "cui": cui}
+                        payload = {
+                            "fecha_real": fecha, 
+                            "desc": f"{nom}\n{desc}", 
+                            "entidad": entidad, 
+                            "pdf": pdf_st, 
+                            "analisis": rep, 
+                            "snip": snip, 
+                            "cui": cui,
+                            "tipo": tipo_proceso
+                        }
                         requests.post(WEBHOOK_URL, json=payload)
                         
                         try: 
